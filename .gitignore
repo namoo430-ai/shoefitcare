@@ -1,0 +1,37 @@
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets/config
+.env
+.env.*
+*.pem
+*.key
+secrets*.json
+
+# Local data and logs (PII sensitive)
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# IDE/system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

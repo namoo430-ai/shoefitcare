@@ -1,0 +1,31 @@
+---
+description: Deployment preflight checks for safe public release
+alwaysApply: true
+---
+
+# Deploy Preflight Rule
+
+Before any public deploy or GitHub upload, enforce this sequence:
+
+1. Run local purge for sensitive data.
+2. Confirm `.gitignore` protects data/log/db/secret files.
+3. Verify no hardcoded credentials in code or docs.
+4. Validate API starts and health endpoints respond.
+5. Verify webhook paths and payload contracts are documented.
+
+# Required Commands
+
+- `python scripts/purge_local_data.py`
+- `python -m py_compile api.py session.py engine.py storage.py`
+
+# Required Docs
+
+- `SECURITY_PREP_1MIN_CHECKLIST.md`
+- `DEPLOY_RENDER.md`
+- `NAVER_WEBHOOK_PAYLOAD.md`
+
+# Release Gate
+
+- If any item fails, stop release and report blockers.
+- Do not suggest “just upload now” when preflight is incomplete.
+

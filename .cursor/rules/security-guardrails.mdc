@@ -1,0 +1,28 @@
+---
+description: Security guardrails for customer data and secrets
+alwaysApply: true
+---
+
+# Security Guardrails
+
+- Treat all user/session/order data as sensitive; never expose raw records in responses.
+- Never commit or upload data files, DB files, logs, or secrets.
+- Keep `.env`, keys, tokens, and credentials out of code; use environment variables only.
+- Do not print full request payloads in logs; log metadata and hashed identifiers only.
+- Before suggesting GitHub upload, require a local purge/checklist step.
+
+# Protected Paths
+
+- Do not read or modify these unless the user explicitly asks:
+  - `data/**`
+  - `**/*.db`
+  - `**/*.sqlite*`
+  - `.env*`
+  - `**/*secret*`
+
+# Pre-Release Safety Checks
+
+- Ensure `.gitignore` excludes `data/`, DB/log files, and secret files.
+- Run local data purge before public upload.
+- Prefer anonymized examples over real customer records in docs/tests.
+

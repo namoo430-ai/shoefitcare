@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: shoefitcare-chatbot
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: SHOEFITCARE_DB
+        value: data/shoefitcare.db
+      - key: SHOEFITCARE_RAG_DIR
+        value: data/rag_docs
+

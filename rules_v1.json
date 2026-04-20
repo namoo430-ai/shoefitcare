@@ -1,0 +1,155 @@
+{
+  "version": "1.0.0",
+  "meta": {
+    "fit_scale": {
+      "기본핏": 0,
+      "편한핏": 1,
+      "아주 편한핏": 2
+    },
+    "size_step_mm": 5
+  },
+  "thresholds": {
+    "composite_consult_score": 4
+  },
+  "stretch_equivalence": {
+    "1": 5,
+    "2": 10,
+    "3": 15
+  },
+  "consult_rules": [
+    {
+      "id": "consult_left_right_diff",
+      "priority": 100,
+      "when": {
+        "left_right_diff": true
+      },
+      "action": {
+        "is_consult": true,
+        "consult_reason": "발 좌우 차이: 비대칭 확인 필요"
+      }
+    },
+    {
+      "id": "consult_hallux_wide_high",
+      "priority": 90,
+      "when": {
+        "hallux_score_min": 3,
+        "wide_ball": true,
+        "composite_score_min": 4
+      },
+      "action": {
+        "is_consult": true,
+        "consult_reason": "무지외반+넓은발볼 고위험 복합 증상"
+      }
+    }
+  ],
+  "core_rules": [
+    {
+      "id": "combo_hallux_wide_score2",
+      "priority": 80,
+      "when": {
+        "hallux_plus_wide_score": 2
+      },
+      "options": [
+        {
+          "fit": "기본핏",
+          "stretch_step": 2
+        },
+        {
+          "fit": "편한핏",
+          "stretch_step": 1
+        },
+        {
+          "fit": "아주 편한핏",
+          "stretch_step": 0,
+          "ready_made": true
+        }
+      ]
+    },
+    {
+      "id": "combo_hallux_wide_score3",
+      "priority": 81,
+      "when": {
+        "hallux_plus_wide_score": 3
+      },
+      "options": [
+        {
+          "fit": "편한핏",
+          "stretch_step": 2
+        },
+        {
+          "fit": "아주 편한핏",
+          "stretch_step": 1
+        }
+      ]
+    }
+  ],
+  "instep_rules": [
+    {
+      "id": "instep_level_1",
+      "priority": 60,
+      "when": {
+        "instep_level": 1
+      },
+      "action": {
+        "size_up_steps": 1,
+        "size_up_mm": 5,
+        "instep_stretch_step": 1,
+        "prefer_size_up": true
+      }
+    },
+    {
+      "id": "instep_level_2",
+      "priority": 61,
+      "when": {
+        "instep_level": 2
+      },
+      "action": {
+        "size_up_steps": 2,
+        "size_up_mm": 10,
+        "instep_stretch_step": 2,
+        "prefer_size_up": true
+      }
+    }
+  ],
+  "toe_rules": [
+    {
+      "id": "toe_end_contact",
+      "priority": 50,
+      "when": {
+        "toe_pain": true,
+        "toe_pain_type": "end_contact"
+      },
+      "action": {
+        "add_works": [
+          "발길이 늘림"
+        ]
+      }
+    },
+    {
+      "id": "toe_width_narrow",
+      "priority": 51,
+      "when": {
+        "toe_pain": true,
+        "toe_pain_type": "width_narrow"
+      },
+      "action": {
+        "add_works": [
+          "앞코 너비 늘림"
+        ]
+      }
+    },
+    {
+      "id": "little_toe_pinpoint",
+      "priority": 52,
+      "when": {
+        "toe_pain": true,
+        "toe_pain_location": "little_toe"
+      },
+      "action": {
+        "add_works": [
+          "핀포인트 앞코 늘림"
+        ]
+      }
+    }
+  ]
+}
