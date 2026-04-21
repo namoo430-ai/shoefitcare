@@ -19,6 +19,7 @@ class NaverAdapter(ChannelAdapter):
         raw_user = payload.get("user")
         user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
         event = payload.get("event", {}) if isinstance(payload.get("event"), dict) else {}
+        text_content = payload.get("textContent", {}) if isinstance(payload.get("textContent"), dict) else {}
         session = payload.get("session", {}) if isinstance(payload.get("session"), dict) else {}
 
         # 공식 웹훅은 `"user": "..."` 문자열(사용자 식별값)로 올 수 있음(chatbot-api README).
@@ -29,7 +30,9 @@ class NaverAdapter(ChannelAdapter):
         postback = event.get("postback", {}) if isinstance(event.get("postback"), dict) else {}
         action = event.get("action", {}) if isinstance(event.get("action"), dict) else {}
         text = (
-            payload.get("text")
+            text_content.get("code")
+            or text_content.get("text")
+            or payload.get("text")
             or payload.get("message")
             or event.get("text")
             or event.get("utterance")

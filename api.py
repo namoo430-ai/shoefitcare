@@ -129,8 +129,17 @@ try:
         text = (message or "").strip().lower()
         if not text:
             return False
+        compact = (
+            text.replace(" ", "")
+            .replace("_", "")
+            .replace("-", "")
+            .replace("/", "")
+            .replace(",", "")
+            .replace("·", "")
+        )
         keywords = (
             "ai_1_2추천",
+            "ai_1_2 추천",
             "1·2단계 추천받기",
             "1,2단계 추천 받기",
             "1/2단계 추천",
@@ -140,7 +149,15 @@ try:
             "발볼·무지외반 상담",
             "발볼 무지외반 상담",
         )
-        return any(k in text for k in keywords)
+        compact_keywords = (
+            "ai12추천",
+            "12단계추천",
+            "12단계추천받기",
+            "추천받기",
+            "무지외반상담",
+            "발볼무지외반상담",
+        )
+        return any(k in text for k in keywords) or any(k in compact for k in compact_keywords)
 
     def _prepare_naver_ai_entry(session, message: str) -> str:
         """
