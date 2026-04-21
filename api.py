@@ -15,12 +15,14 @@ try:
     import sys, os
     import json
     import hashlib
+    import urllib.request
+    import urllib.error
     from datetime import datetime
     from collections import Counter
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-    from core.session import ConversationController, SessionStore
+    from core.session import ConversationController, SessionStore, SessionState
     from core.storage import init_db
     from adapters.naver import NaverAdapter
     from adapters.kakao import KakaoAdapter
@@ -52,6 +54,10 @@ try:
     _NAVER_AUTO_REPLY_FALLBACK = _NAVER_AUTO_REPLY_TEMPLATES.get(
         _NAVER_AUTO_REPLY_VARIANT, _NAVER_AUTO_REPLY_TEMPLATES["A"]
     )
+    _NAVER_SEND_API_ENABLED = os.environ.get("NAVER_SEND_API_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    _NAVER_SEND_API_URL = os.environ.get("NAVER_SEND_API_URL", "").strip()
+    _NAVER_SEND_API_AUTH = os.environ.get("NAVER_SEND_API_AUTH", "").strip()
+    _NAVER_SEND_API_TIMEOUT_SEC = float(os.environ.get("NAVER_SEND_API_TIMEOUT_SEC", "5"))
 
     def _audit_event(event: str, session_id: str, channel: str, shop_id: str, policy_version: str, message: str = ""):
         """운영 로그(JSONL): 민감 원문은 저장하지 않고 추적 가능한 메타만 기록."""
@@ -119,6 +125,36 @@ try:
             }
         return None
 
+    def _is_naver_ai_entry(message: str) -> bool:
+        text = (message or "").strip().lower()
+        if not text:
+            return False
+        keywords = (
+            "ai_1_2추천",
+            "1·2단계 추천받기",
+            "1,2단계 추천 받기",
+            "1/2단계 추천",
+            "1단계/2단계 추천",
+            "추천받기",
+            "무지외반 상담",
+            "발볼·무지외반 상담",
+            "발볼 무지외반 상담",
+        )
+        return any(k in text for k in keywords)
+
+    def _prepare_naver_ai_entry(session, message: str) -> str:
+        """
+        톡톡 추천 버튼 클릭을 AI 진단 시작 입력으로 정규화.
+        - 완료 상태면 재진단 가능하도록 Q_ENTRY로 되돌린다.
+        - Q_ENTRY에서는 '1'(상품 선행)로 바로 진입시킨다.
+        """
+        if session.state in (SessionState.RESULT, SessionState.AWAIT_CONSULT, SessionState.DONE):
+            session.state = SessionState.Q_ENTRY
+            session.completed_at = None
+        if session.state == SessionState.Q_ENTRY:
+            return "1"
+        return message
+
     def _load_chat_events(log_path: str) -> list[dict]:
         events: list[dict] = []
         if not os.path.exists(log_path):
@@ -133,6 +169,56 @@ try:
                 except Exception:
                     continue
         return events
+
+    def _naver_push_payload(inbound, result: dict) -> dict:
+        """네이버 보내기 API(chatbot-api README: POST …/chatbot/v1/event) 스펙에 맞춘 payload."""
+        quick = result.get("quick_replies", []) or []
+        text_content: dict = {"text": result.get("text", "")}
+        if quick:
+            button_list = []
+            for item in quick:
+                code = str(item)[:1000]
+                title = code[:18] if len(code) > 18 else code
+                button_list.append({"type": "TEXT", "data": {"title": title, "code": code}})
+            text_content["quickReply"] = {"buttonList": button_list}
+        return {
+            "event": "send",
+            "user": inbound.user_id,
+            "textContent": text_content,
+        }
+
+    def _send_naver_push(inbound, result: dict, session) -> bool:
+        """
+        네이버 보내기 API로 챗봇 응답을 푸시한다.
+        - env 미설정/호출 실패 시 False 반환(기존 반환 로직 유지)
+        """
+        if not _NAVER_SEND_API_ENABLED:
+            return False
+        if not _NAVER_SEND_API_URL:
+            _audit_event("naver_send_api_skipped_no_url", session.session_id, session.channel, session.shop_id, session.policy_version)
+            return False
+
+        payload = _naver_push_payload(inbound, result)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json;charset=UTF-8"}
+        if _NAVER_SEND_API_AUTH:
+            headers["Authorization"] = _NAVER_SEND_API_AUTH
+
+        req = urllib.request.Request(_NAVER_SEND_API_URL, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=_NAVER_SEND_API_TIMEOUT_SEC) as resp:
+                code = getattr(resp, "status", 200)
+                if 200 <= int(code) < 300:
+                    _audit_event("naver_send_api_success", session.session_id, session.channel, session.shop_id, session.policy_version)
+                    return True
+                _audit_event("naver_send_api_non2xx", session.session_id, session.channel, session.shop_id, session.policy_version)
+                return False
+        except urllib.error.HTTPError:
+            _audit_event("naver_send_api_http_error", session.session_id, session.channel, session.shop_id, session.policy_version)
+            return False
+        except Exception:
+            _audit_event("naver_send_api_exception", session.session_id, session.channel, session.shop_id, session.policy_version)
+            return False
 
     class MessageRequest(BaseModel):
         session_id: str | None = None
@@ -183,33 +269,47 @@ try:
             session.policy_version = str(payload.get("policy_version") or "v1")
             store.save(session)
             if inbound.message:
-                auto_result = _naver_auto_reply(inbound.message)
-                if auto_result:
-                    session.add_message("user", inbound.message)
-                    session.add_message("assistant", auto_result["text"])
-                    _audit_event("naver_auto_closed", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
-                    result = auto_result
+                if _is_naver_ai_entry(inbound.message):
+                    _audit_event("naver_ai_entry_click", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
+                    normalized = _prepare_naver_ai_entry(session, inbound.message)
+                    result = _safe_handle_message(session, normalized)
                 else:
-                    result = _safe_handle_message(session, inbound.message)
+                    auto_result = _naver_auto_reply(inbound.message)
+                    if auto_result:
+                        session.add_message("user", inbound.message)
+                        session.add_message("assistant", auto_result["text"])
+                        _audit_event("naver_auto_closed", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
+                        result = auto_result
+                    else:
+                        result = _safe_handle_message(session, inbound.message)
             else:
                 result = ctrl.get_initial_prompt()
         else:
             session.shop_id = str(payload.get("shop_id") or session.shop_id)
             session.policy_version = str(payload.get("policy_version") or session.policy_version)
             if inbound.message:
-                auto_result = _naver_auto_reply(inbound.message)
-                if auto_result:
-                    session.add_message("user", inbound.message)
-                    session.add_message("assistant", auto_result["text"])
-                    _audit_event("naver_auto_closed", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
-                    result = auto_result
+                if _is_naver_ai_entry(inbound.message):
+                    _audit_event("naver_ai_entry_click", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
+                    normalized = _prepare_naver_ai_entry(session, inbound.message)
+                    result = _safe_handle_message(session, normalized)
                 else:
-                    result = _safe_handle_message(session, inbound.message)
+                    auto_result = _naver_auto_reply(inbound.message)
+                    if auto_result:
+                        session.add_message("user", inbound.message)
+                        session.add_message("assistant", auto_result["text"])
+                        _audit_event("naver_auto_closed", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
+                        result = auto_result
+                    else:
+                        result = _safe_handle_message(session, inbound.message)
             else:
                 result = ctrl.get_initial_prompt()
 
         store.save(session)
         _audit_event("naver_webhook", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
+
+        # 옵션: 네이버 보내기 API로 응답 푸시 (시나리오 고정 응답을 대체/보완)
+        _send_naver_push(inbound, result, session)
+
         response = naver_adapter.build_outbound(result)
         response["session_id"] = session.session_id
         return response
