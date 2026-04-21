@@ -162,15 +162,12 @@ try:
     def _prepare_naver_ai_entry(session, message: str) -> str:
         """
         톡톡 추천 버튼 클릭을 AI 진단 시작 입력으로 정규화.
-        - 완료 상태면 재진단 가능하도록 Q_ENTRY로 되돌린다.
-        - Q_ENTRY에서는 '1'(상품 선행)로 바로 진입시킨다.
+        - 상태와 무관하게 진단 시작점(Q_ENTRY)으로 되돌린다.
+        - 항상 '1'(상품 선행)로 바로 진입시킨다.
         """
-        if session.state in (SessionState.RESULT, SessionState.AWAIT_CONSULT, SessionState.DONE):
-            session.state = SessionState.Q_ENTRY
-            session.completed_at = None
-        if session.state == SessionState.Q_ENTRY:
-            return "1"
-        return message
+        session.state = SessionState.Q_ENTRY
+        session.completed_at = None
+        return "1"
 
     def _load_chat_events(log_path: str) -> list[dict]:
         events: list[dict] = []
