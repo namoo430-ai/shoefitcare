@@ -325,7 +325,10 @@ try:
         _audit_event("naver_webhook", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
 
         # 옵션: 네이버 보내기 API로 응답 푸시 (시나리오 고정 응답을 대체/보완)
-        _send_naver_push(inbound, result, session)
+        # 푸시가 성공하면 웹훅 동기 응답(send)을 생략해 중복 발화를 방지한다.
+        pushed = _send_naver_push(inbound, result, session)
+        if pushed:
+            return {"ok": True, "session_id": session.session_id}
 
         response = naver_adapter.build_outbound(result)
         response["session_id"] = session.session_id
