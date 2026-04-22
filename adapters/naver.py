@@ -67,8 +67,9 @@ class NaverAdapter(ChannelAdapter):
         quick = result.get("quick_replies", []) or []
         button_list = []
         for item in quick:
-            code = str(item)[:1000]
-            title = code[:18] if len(code) > 18 else code
+            raw = str(item).strip()
+            code = "1" if (("추천" in raw and "단계" in raw) or ("상담" in raw)) else raw[:1000]
+            title = raw[:18] if len(raw) > 18 else raw
             button_list.append({"type": "TEXT", "data": {"title": title, "code": code}})
 
         text_content: dict[str, Any] = {"text": result.get("text", "")}
