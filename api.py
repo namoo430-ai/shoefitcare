@@ -41,14 +41,14 @@ try:
     _NAVER_AUTO_REPLY_VARIANT = os.environ.get("NAVER_AUTO_REPLY_VARIANT", "A").strip().upper()
     _NAVER_AUTO_REPLY_TEMPLATES = {
         "A": (
-            "문의하신 상품은 발볼 늘림 가능합니다.\n"
-            "주문 시 본품 옵션 '발볼 늘림' + 추가상품 '발볼 늘림 1단계/2단계'를 함께 선택해 주세요.\n"
-            "원하시면 30초 진단으로 단계를 바로 추천드릴게요. 평소 사이즈(mm)와 불편 부위를 알려주세요."
+            "네, 발볼 늘림 가능합니다.\n"
+            "주문하실 때 본품 옵션 '발볼 늘림'과 추가상품 '발볼 늘림 1단계/2단계'를 함께 선택해 주세요.\n"
+            "원하시면 바로 맞춤진단 도와드릴게요. 평소 사이즈(mm)와 불편 부위만 알려주시면 됩니다."
         ),
         "B": (
-            "발볼 늘림 가능해요.\n"
-            "주문은 본품 '발볼 늘림'과 추가상품 '1단계/2단계'를 같이 선택해 주세요.\n"
-            "바로 추천받으시려면 사이즈(mm)와 불편 부위(발볼/앞코/무지외반)만 알려주세요."
+            "네, 발볼 늘림 가능해요.\n"
+            "주문 시 본품 '발볼 늘림'과 추가상품 '1단계/2단계'를 같이 선택해 주세요.\n"
+            "맞춤 추천을 원하시면 사이즈(mm)와 불편 부위(발볼/앞코/무지외반)를 알려주세요."
         ),
     }
     _NAVER_AUTO_REPLY_FALLBACK = _NAVER_AUTO_REPLY_TEMPLATES.get(
@@ -119,7 +119,7 @@ try:
         if has_process and not has_personalized:
             return {
                 "text": _NAVER_AUTO_REPLY_FALLBACK,
-                "quick_replies": ["1·2단계 추천받기", "무지외반 상담받기", "발볼 상담받기"],
+                "quick_replies": ["1·2단계 추천", "무지외반 상담", "발볼 상담"],
                 "state": "AUTO_CLOSED",
                 "done": True,
             }
@@ -141,11 +141,13 @@ try:
             "ai_1_2추천",
             "ai_1_2 추천",
             "1·2단계 추천받기",
+            "1·2단계 추천",
             "1,2단계 추천 받기",
             "1/2단계 추천",
             "1단계/2단계 추천",
             "추천받기",
             "무지외반 상담",
+            "발볼 상담",
             "발볼·무지외반 상담",
             "발볼 무지외반 상담",
         )
@@ -155,6 +157,7 @@ try:
             "12단계추천받기",
             "추천받기",
             "무지외반상담",
+            "발볼상담",
             "발볼무지외반상담",
         )
         return any(k in text for k in keywords) or any(k in compact for k in compact_keywords)

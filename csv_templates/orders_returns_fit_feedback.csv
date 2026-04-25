@@ -1,0 +1,4 @@
+order_id,session_id,customer_key,product_id,size_mm,ordered_at,was_returned,return_reason,returned_at,fit_feedback
+ORD-20260422-001,SESSION-EX-001,CUST-EX-001,dress_wide,230,2026-04-22T10:15:00+09:00,false,,,"편안하고 압박이 줄었어요"
+ORD-20260422-002,SESSION-EX-002,CUST-EX-002,loafer_wide,235,2026-04-22T11:20:00+09:00,true,앞코 압박,2026-04-25T14:00:00+09:00,"생각보다 앞코가 좁게 느껴졌어요"
+ORD-20260422-003,SESSION-EX-003,CUST-EX-003,sneaker_xtra,240,2026-04-22T13:05:00+09:00,false,,,"발등이 편하고 장시간 착화 괜찮았어요"

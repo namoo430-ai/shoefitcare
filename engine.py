@@ -326,11 +326,14 @@ class DiagnosisEngine:
         if "발등 높음" in issues:
             return inp.original_size + 5, True
         # 3) 꽉낌은 길이는 대체로 충족으로 보고 과한 업사이즈를 제한
-        #    - 적용점수 0~2: 업사이즈 없이 늘림 중심
-        #    - 적용점수 3+: 한 사이즈 업(+5mm)만 허용
+        #    - Q5-3 응답을 직접 분기 트리거로 사용한다.
         if "꽉" in inp.fit_experience:
-            applied = self._applied_score(inp, issues)
-            if applied >= 3:
+            if inp.heel_slip_when_one_size_up is False:
+                return inp.original_size + 5, True
+            if inp.heel_slip_when_one_size_up is True:
+                return inp.original_size - 5, True
+            # 정보가 불확실(해본 적 없음)할 때는 심한 무지외반만 안전측으로 업사이즈
+            if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
                 return inp.original_size + 5, True
         return inp.original_size, False
 
@@ -465,8 +468,7 @@ class DiagnosisEngine:
         confidence: float,
         path: str,
     ) -> tuple[bool, str]:
-        # 운영 정책: 꽉낌이라도 조건부로만 사이즈 업 우선.
-        # 조건(복합>=3/발등 이슈)일 때 상담보다 사이즈 업을 우선한다.
+        # 운영 정책: 꽉낌은 Q5-3 응답 기반 사이즈 분기 우선.
         if "꽉" in inp.fit_experience and self._should_upsize_for_tight(inp, issues):
             return False, ""
         if "무지외반" in issues and inp.hallux_severity == "3":
@@ -511,11 +513,19 @@ class DiagnosisEngine:
                 reason += " [구두 기준: 기본핏 8.0 -> 편한핏 8.2]"
             return 1, 2.5, reason
 
-        # 꽉낌은 적용점수 기반으로 늘림 우선순위를 부여
+        # 꽉낌은 Q5-3 응답 기반으로 늘림 우선순위를 부여
         if "꽉" in inp.fit_experience:
+            if inp.heel_slip_when_one_size_up is False:
+                return 0, 0.0, "업사이즈(한 치수 업) 수용 가능: 과늘림 방지를 위해 추가 늘림 비활성화"
+            if inp.heel_slip_when_one_size_up is True:
+                if "앞코" in issues:
+                    return 1, 2.5, self._build_stretch_reason(inp, 1, 2.5, "업사이즈 헐떡임 이력: 보수 사이즈 + 앞코/볼 압박 완화 보정")
+                return 0, 0.0, "업사이즈 헐떡임 이력: 보수 사이즈 우선, 추가 늘림 최소화"
+            # 해본 적 없음/모름: 심한 무지외반은 3단계 보정 유지
+            if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+                return 3, 7.5, self._build_stretch_reason(inp, 3, 7.5, "정보 불확실 + 무지외반 심함: 3단계 보정")
+
             applied = self._applied_score(inp, issues)
-            # 적용점수 3 이상은 길이보다 압박 완화 목적의 +5mm를 우선하고
-            # 과가공/과업사이즈를 피하기 위해 추가 늘림은 기본 비활성화한다.
             if applied >= 3:
                 return 0, 0.0, "꽉낌 + 적용점수 3이상: 한 사이즈 업(+5mm) 우선"
             if applied == 1:
@@ -590,12 +600,6 @@ class DiagnosisEngine:
         q2 = self._q2_score(inp, issues)
         q5_fit = self._fit_score(inp)
         total = q2 + q5_fit
-        # 꽉낌 + 한 치수 업 시 헐떡임 질문 응답으로 복합(운영) 가중/완화
-        if "꽉" in (inp.fit_experience or "") and inp.heel_slip_when_one_size_up is not None:
-            if inp.heel_slip_when_one_size_up is False:
-                total += 1  # 업해도 헐떡임 없음 → 볼 폭 쪽 이슈 비중↑
-            else:
-                total -= 1  # 업 시 헐떡임 → 길이·핏 트레이드, 복합 보수
         return max(0, min(total, 6))
 
     def _applied_score(self, inp: CustomerInput, issues: set) -> int:
@@ -620,30 +624,23 @@ class DiagnosisEngine:
 
     def _should_upsize_for_tight(self, inp: CustomerInput, issues: set) -> bool:
         """
-        꽉낌 시 사이즈 업 조건:
-        - 복합점수 >= 3
-        - 발등 높음 이슈
-        - 새끼발가락 통증(toe_detail=3, 핀포인트 앞코)
+        꽉낌 시 사이즈 업 조건(Q5-3 직분기):
+        - Q5-3 = 2(업해도 헐떡임 없음)
+        - Q5-3 = 3(모름) + 무지외반 심함
         """
-        applied = self._applied_score(inp, issues)
-        return (applied >= 3) or "발등 높음" in issues or inp.toe_detail == "3"
+        if inp.heel_slip_when_one_size_up is False:
+            return True
+        if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+            return True
+        return False
 
     def _tight_upsize_reason(self, inp: CustomerInput, issues: set) -> str:
-        """꽉낌 사이즈 업 사유 문구를 실제 트리거 조건과 일치시킨다."""
-        reasons = []
-        applied = self._applied_score(inp, issues)
-        if applied >= 3:
-            reasons.append(f"적용점수={applied}(3이상)")
-        if "발등 높음" in issues:
-            reasons.append("발등 이슈")
-        if inp.toe_detail == "3":
-            reasons.append("새끼발가락 통증")
-        joined = "/".join(reasons) if reasons else "조건 충족"
-        if applied >= 3:
-            up_label = "한 사이즈 업(+5mm)"
-        else:
-            up_label = "업사이즈 검토"
-        return f"볼 압박(꽉낌) + 위험조건({joined}): {up_label} 우선 추천"
+        """꽉낌 업사이즈 사유를 Q5-3 응답 중심으로 설명한다."""
+        if inp.heel_slip_when_one_size_up is False:
+            return "볼 압박(꽉낌) + 업사이즈 헐떡임 없음: 같은 핏라인 한 사이즈 업(+5mm) 추천"
+        if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+            return "볼 압박(꽉낌) + 정보 불확실 + 무지외반 심함: 한 사이즈 업(+5mm) 안전 권장"
+        return "볼 압박(꽉낌): 업사이즈 여부는 보수적으로 판단"
 
     def _build_anchor_tight_options(self, inp: CustomerInput) -> tuple[str, str]:
         """
