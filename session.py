@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Optional
 import uuid
 import json
+import re
 from llm_hybrid import HybridLLMAssistant
 
 
@@ -304,7 +305,7 @@ class ConversationController:
 
     def _quick_replies_for_state(self, session: ChatSession) -> list[str]:
         if session.state == SessionState.Q_ENTRY:
-            return ["상품부터 고를게요", "발 정보부터 알려드릴게요"]
+            return ["상품 먼저 추천받기", "발 정보 입력 후 추천받기"]
         if session.state == SessionState.Q_MEAS:
             return ["네", "아니요"]
         if session.state == SessionState.Q_FOOT:
@@ -532,6 +533,19 @@ class ConversationController:
                 "직전 진단에서 오류가 발생했습니다. 마지막 질문에 답한 뒤 다시 시도해 주세요."
             )
 
+        # ── 결과 상태 재시작 지원 ───────────────────
+        if state == SessionState.RESULT:
+            # 같은 채팅창에서 1/2 또는 재시작 의도를 보내면 바로 새 진단 시작
+            t = (text or "").strip()
+            entry = self._entry_key(t)
+            if entry in ("1", "2"):
+                session.state = SessionState.Q_ENTRY
+                return self._process(session, entry)
+            if t.replace(" ", "") in ("처음으로", "다시", "재진단", "다시시작", "새로시작"):
+                session.state = SessionState.Q_ENTRY
+                return self.get_initial_prompt()
+            raise ValueError("다시 시작하려면 '상품 먼저 추천받기' 또는 '발 정보 입력 후 추천받기'를 선택해 주세요.")
+
         # ── 완료 상태 ────────────────────────────
         if session.is_complete():
             return {
@@ -688,37 +702,66 @@ class ConversationController:
         )
         additional_label = ", ".join(res.additional_works) if res.additional_works else "없음"
         summary_line = (
-            f"맞춤진단: [{res.recommended_fit}] 제품 추천 / 추천사이즈 {res.final_size}mm"
-            f" / 발볼늘림 {stretch_label} / {additional_label}"
+            "진단 결과 안내드릴게요 🙂\n"
+            f"추천 핏은 [{res.recommended_fit}]이고, 추천 사이즈는 {res.final_size}mm예요.\n"
+            f"발볼 늘림은 {stretch_label}, 추가 보정은 {additional_label}로 안내드려요."
         )
-        reason_line = f"진단내용: {res.recommendation_reason}"
+        reason_line = f"추천 이유: {res.recommendation_reason}"
+        summary_reason = self._build_mobile_friendly_summary_reason(inp, res, top3 or [])
 
-        lines = [summary_line, reason_line]
+        lines = [summary_line, "", reason_line, "", "추천 내용을 쉽게 설명드릴게요 💡", summary_reason]
 
         if top3:
-            lines += ["", "추천 상품 TOP 3:"]
+            lines += ["", "고객님의 발볼 핏에 맞는 추천 상품 3개를 소개해드릴게요 👟"]
             for i, item in enumerate(top3, start=1):
-                score = item.get("score_breakdown") or {}
-                score_text = (
-                    f"점수 {item.get('total_score', 0)}"
-                    f" (fit {score.get('fit', 0)} / size {score.get('size', 0)}"
-                    f" / symptom {score.get('symptom', 0)} / work {score.get('workability', 0)}"
-                    f" / pop {score.get('popularity', 0)} - risk {score.get('risk_penalty', 0)})"
-                )
+                short_name = self._short_product_label(str(item.get("name", "")).strip())
                 lines.append(
-                    f"- {i}) {item.get('name')} ({item.get('fit')}, {item.get('size_mm')}mm) - {item.get('reason')} / {score_text}"
+                    f"- {i}) {short_name} ({item.get('fit')}, {item.get('size_mm')}mm)"
                 )
 
-        # 관리자용 제작 지시서도 핵심만 간단히 제공
-        lines += [
-            "",
-            "관리자용 제작 지시:",
-            f"- 제품: {res.recommended_product_id} ({res.recommended_product_name}) / 사이즈: {res.final_size}mm",
-            f"- 발볼늘림: {stretch_label} / 추가보정: {additional_label}",
-        ]
         if res.is_consult:
-            lines.append(f"- 상담 필요: {res.consult_reason}")
+            lines += ["", f"추가 상담이 필요해 보여요: {res.consult_reason}"]
+        else:
+            lines += ["", "원하시면 같은 채팅창에서 바로 다시 진단해드릴게요."]
         return "\n".join(lines)
+
+    def _build_mobile_friendly_summary_reason(self, inp, res, top3: list[dict]) -> str:
+        issues = set(inp.foot_issues or [])
+        issue_parts = []
+        if "넓음" in issues:
+            issue_parts.append("발볼 압박")
+        if "무지외반" in issues:
+            issue_parts.append("무지외반 불편")
+        if "앞코" in issues:
+            issue_parts.append("앞코 답답함")
+        if "발등 높음" in issues:
+            issue_parts.append("발등 압박")
+        issue_text = ", ".join(issue_parts) if issue_parts else "평소 착화감"
+
+        lines = [
+            f"이번 추천은 '{issue_text}' 불편을 줄이는 데 우선순위를 두고 맞췄어요.",
+            f"권장 사이즈는 {res.final_size}mm이고, 핏은 [{res.recommended_fit}] 기준으로 안정감 있게 골랐어요.",
+            "추천 상품 상세페이지를 비교해 보시고, 핏 라인 참고하셔서 구매해 주세요 ^^",
+        ]
+        return "\n".join(lines)
+
+    def _short_product_label(self, name: str, max_len: int = 28) -> str:
+        if not name:
+            return "추천 상품"
+        text = str(name).strip()
+        # 모델코드(영문+숫자)를 우선 추출해 뒤에 고정 표기
+        matches = re.findall(r"[A-Za-z]+[A-Za-z0-9-]*\d+[A-Za-z0-9-]*", text)
+        code = matches[-1] if matches else ""
+        core = text
+        if code:
+            core = core.replace(code, "").strip(" -_/")
+
+        if len(core) > max_len:
+            core = core[: max_len - 1].rstrip() + "…"
+
+        if code:
+            return f"{core} [{code}]"
+        return core
 
     def _size_adjust_suffix(self, inp, res) -> str:
         """size_adjusted 원인별로 표시 (헐떡임만이 아님)."""
@@ -779,9 +822,9 @@ class ConversationController:
 
     def _entry_key(self, text: str) -> str:
         t = (text or "").strip().replace(" ", "")
-        if t in ("1", "상품부터고를게요", "상품부터", "상품선택", "스타일부터"):
+        if t in ("1", "상품먼저추천받기", "상품부터고를게요", "상품부터", "상품선택", "스타일부터"):
             return "1"
-        if t in ("2", "발정보부터알려드릴게요", "발정보부터", "발정보", "정보부터"):
+        if t in ("2", "발정보입력후추천받기", "발정보부터알려드릴게요", "발정보부터", "발정보", "정보부터"):
             return "2"
         return text
 
@@ -836,9 +879,9 @@ class ConversationController:
                 "✨ 안녕하세요! 슈핏케어입니다.\n"
                 "편하게 몇 가지만 알려주시면 맞춤 추천 도와드릴게요.\n"
                 "어디서부터 시작할까요?\n"
-                "보고 있는 상품부터 고를게요 / 발 정보부터 알려드릴게요"
+                "상품 먼저 추천받기 / 발 정보 입력 후 추천받기"
             ),
-            "quick_replies": ["상품부터 고를게요", "발 정보부터 알려드릴게요"],
+            "quick_replies": ["상품 먼저 추천받기", "발 정보 입력 후 추천받기"],
             "state": SessionState.Q_ENTRY.value,
             "done": False,
         }
