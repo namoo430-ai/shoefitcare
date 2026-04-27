@@ -11,6 +11,7 @@
 # ──────────────────────────────────────────────
 try:
     from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
     from pydantic import BaseModel
     import sys, os
     import json
@@ -58,6 +59,364 @@ try:
     _NAVER_SEND_API_URL = os.environ.get("NAVER_SEND_API_URL", "").strip()
     _NAVER_SEND_API_AUTH = os.environ.get("NAVER_SEND_API_AUTH", "").strip()
     _NAVER_SEND_API_TIMEOUT_SEC = float(os.environ.get("NAVER_SEND_API_TIMEOUT_SEC", "5"))
+
+    _DEMO_HTML = """<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>슈핏케어 추천엔진 데모</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f7f8fb; color: #222; }
+    .wrap { max-width: 720px; margin: 24px auto; background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); overflow: hidden; }
+    .head { padding: 16px 20px; background: #1f3a8a; color: #fff; }
+    .head h1 { margin: 0; font-size: 18px; }
+    .head p { margin: 6px 0 0; font-size: 13px; opacity: .95; }
+    .status-badge { margin-top: 8px; display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: 999px; background: #334155; color: #fff; }
+    .status-badge.ok { background: #16a34a; }
+    .status-badge.err { background: #b91c1c; }
+    body.foot-mode .chat .quick { display: none !important; }
+    .chat { height: 520px; overflow: auto; padding: 16px; background: #f7f8fb; }
+    .msg { max-width: 86%; margin: 10px 0; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; line-height: 1.5; }
+    .bot { background: #fff; border: 1px solid #e5e7eb; }
+    .me { margin-left: auto; background: #dbeafe; border: 1px solid #bfdbfe; }
+    .meta { font-size: 12px; color: #6b7280; margin-top: 4px; }
+    .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .quick button { border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+    .quick button:hover { background: #eef2ff; }
+    .panel { padding: 10px 12px; border-top: 1px solid #e5e7eb; background: #fff; }
+    .panel.hidden { display: none; }
+    .panel.disabled { opacity: 0.5; }
+    .panel.disabled .chips button,
+    .panel.disabled .actions button { cursor: not-allowed; }
+    .panel .label { font-size: 12px; color: #475569; margin-bottom: 8px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chips button { border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 999px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+    .chips button:hover { background: #e2e8f0; }
+    .chips button.active { background: #dbeafe; border-color: #93c5fd; color: #1e3a8a; font-weight: 600; }
+    .chips-detail { margin-top: 8px; display: none; }
+    .selection-preview { margin-top: 8px; font-size: 12px; color: #334155; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .actions button { border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+    #complete-selection { background: #1d4ed8; color: #fff; }
+    #clear-selection { background: #64748b; color: #fff; }
+    .input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff; }
+    .input input { flex: 1; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; font-size: 14px; }
+    .input button { border: 0; background: #1f3a8a; color: #fff; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+    .row { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px dashed #e5e7eb; font-size: 12px; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>슈핏케어 추천엔진 데모</h1>
+      <p>/chat API를 사용해 추천 흐름을 바로 시연합니다.</p>
+      <span id="ui-status" class="status-badge">UI 초기화 중</span>
+    </div>
+    <div class="row">session_id: <span id="sid">없음</span></div>
+    <div id="chat" class="chat"></div>
+    <div id="quick-start-panel" class="panel">
+      <div class="label">빠른 시작</div>
+      <div class="chips">
+        <button type="button" data-role="quick-start" data-msg="1">상품 먼저 추천받기 (1)</button>
+        <button type="button" data-role="quick-start" data-msg="2">발 정보 입력 후 추천받기 (2)</button>
+      </div>
+    </div>
+    <div id="symptom-panel" class="panel disabled">
+      <div class="label">증상 선택 (복수 선택)</div>
+      <div id="symptom-chips" class="chips">
+        <button type="button" data-symptom="narrow">좁음</button>
+        <button type="button" data-symptom="normal">보통</button>
+        <button type="button" data-symptom="wide">넓음</button>
+        <button type="button" data-symptom="hallux">무지외반</button>
+        <button type="button" data-symptom="instep">발등 높음</button>
+        <button type="button" data-symptom="chubby">통통함</button>
+        <button type="button" data-symptom="toe">앞코</button>
+      </div>
+      <div id="detail-wide" class="chips chips-detail">
+        <button type="button" data-detail-for="wide" data-value="1">넓음 1. 약간</button>
+        <button type="button" data-detail-for="wide" data-value="2">넓음 2. 많이</button>
+      </div>
+      <div id="detail-hallux" class="chips chips-detail">
+        <button type="button" data-detail-for="hallux" data-value="1">무지외반 1. 약간</button>
+        <button type="button" data-detail-for="hallux" data-value="2">무지외반 2. 중간</button>
+        <button type="button" data-detail-for="hallux" data-value="3">무지외반 3. 심함</button>
+      </div>
+      <div id="detail-instep" class="chips chips-detail">
+        <button type="button" data-detail-for="instep" data-value="1">발등 높음 1. 약간</button>
+        <button type="button" data-detail-for="instep" data-value="2">발등 높음 2. 중간</button>
+        <button type="button" data-detail-for="instep" data-value="3">발등 높음 3. 심함</button>
+      </div>
+      <div id="detail-toe" class="chips chips-detail">
+        <button type="button" data-detail-for="toe" data-value="1">앞코 1. 발끝 닿음</button>
+        <button type="button" data-detail-for="toe" data-value="2">앞코 2. 너비 좁음</button>
+        <button type="button" data-detail-for="toe" data-value="3">앞코 3. 새끼발가락 통증</button>
+      </div>
+      <div id="selection-preview" class="selection-preview">선택된 항목: 없음</div>
+      <div class="actions">
+        <button type="button" id="complete-selection">선택 완료 (단일 전송)</button>
+        <button type="button" id="clear-selection">전체 초기화</button>
+      </div>
+    </div>
+    <div class="input">
+      <input id="msg" placeholder="메시지를 입력하세요 (예: 1, 구두, 넓음)" />
+      <button id="send">보내기</button>
+      <button id="reset" style="background:#475569;">새 세션</button>
+    </div>
+  </div>
+  <script>
+    const chat = document.getElementById("chat");
+    const msg = document.getElementById("msg");
+    const sidEl = document.getElementById("sid");
+    const uiStatus = document.getElementById("ui-status");
+    const quickStartPanel = document.getElementById("quick-start-panel");
+    const symptomPanel = document.getElementById("symptom-panel");
+    const symptomChips = document.getElementById("symptom-chips");
+    const selectionPreview = document.getElementById("selection-preview");
+    const completeSelectionBtn = document.getElementById("complete-selection");
+    const clearSelectionBtn = document.getElementById("clear-selection");
+    let sessionId = null;
+    let symptomPanelEnabled = false;
+    let bootPromise = null;
+    const basePayload = { channel: "web", customer_id: "demo_user", shop_id: "default_shop", policy_version: "v1" };
+    const symptomOrder = ["narrow", "normal", "wide", "hallux", "instep", "chubby", "toe"];
+    const detailOrder = ["wide", "hallux", "instep", "toe"];
+    const symptomMap = {
+      narrow: "좁음",
+      normal: "보통",
+      wide: "넓음",
+      hallux: "무지외반",
+      instep: "발등 높음",
+      chubby: "통통함",
+      toe: "앞코"
+    };
+    const selectedSymptoms = new Set();
+    const selectedDetails = {};
+
+    function add(text, who, extra) {
+      const div = document.createElement("div");
+      div.className = "msg " + who;
+      div.textContent = text || "";
+      chat.appendChild(div);
+      if (extra) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = extra;
+        chat.appendChild(meta);
+      }
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function setUiStatus(status, label) {
+      uiStatus.classList.remove("ok", "err");
+      if (status === "ok") uiStatus.classList.add("ok");
+      if (status === "err") uiStatus.classList.add("err");
+      uiStatus.textContent = label;
+    }
+
+    function updateInputPlaceholder(state) {
+      const map = {
+        Q_ENTRY: "메시지를 입력하세요 (예: 1 또는 2)",
+        Q_MEAS: "메시지를 입력하세요 (예: 네 / 아니요)",
+        Q_MEAS_INPUT: "발볼 너비를 입력하세요 (예: 92)",
+        Q_MEAS_LENGTH: "발길이를 입력하세요 (예: 235)",
+        Q_DESIGN: "스타일을 선택하거나 입력하세요 (예: 구두)",
+        Q_FOOT: "증상은 아래 패널에서 선택해 주세요",
+        Q_FOOT_DETAIL: "세부 단계는 아래 버튼으로 선택해 주세요",
+        Q_SIZE: "사이즈를 입력하세요 (예: 235)",
+        Q_SIZE_FIT: "핏 라인을 선택하거나 입력하세요 (예: 편한핏)",
+        Q_FIT_EXP: "착화 경험을 선택하거나 입력하세요",
+      };
+      msg.placeholder = map[state] || "메시지를 입력하세요";
+    }
+
+    function updateGuidedPanels(state) {
+      const showQuickStart = state === "Q_ENTRY" || state === "START";
+      quickStartPanel.classList.toggle("hidden", !showQuickStart);
+      const showSymptom = state === "Q_FOOT" || state === "Q_FOOT_DETAIL";
+      symptomPanel.classList.toggle("hidden", !showSymptom);
+      setSymptomPanelEnabled(showSymptom);
+    }
+
+    async function sendMessage(text) {
+      const t = (text || "").trim();
+      if (!t) return;
+      if (bootPromise) await bootPromise;
+      add(t, "me");
+      await callChat(t);
+    }
+
+    async function callChat(userText) {
+      const payload = { ...basePayload, session_id: sessionId, message: userText };
+      let data;
+      try {
+        const res = await fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        data = await res.json();
+      } catch (e) {
+        setUiStatus("err", "UI 오류: API 호출 실패");
+        throw e;
+      }
+      sessionId = data.session_id || sessionId;
+      sidEl.textContent = sessionId || "없음";
+      updateInputPlaceholder(data.state);
+      updateGuidedPanels(data.state);
+      if (["Q_FOOT", "Q_FOOT_DETAIL"].includes(data.state)) {
+        chat.querySelectorAll(".quick").forEach((el) => el.remove());
+      }
+      add(data.text || "(응답 없음)", "bot");
+      const useInlineQuickReplies = !["Q_FOOT", "Q_FOOT_DETAIL"].includes(data.state);
+      if (useInlineQuickReplies && Array.isArray(data.quick_replies) && data.quick_replies.length) {
+        const q = document.createElement("div");
+        q.className = "quick";
+        data.quick_replies.forEach((x) => {
+          const b = document.createElement("button");
+          b.textContent = x;
+          b.onclick = () => {
+            add(x, "me");
+            callChat(x);
+          };
+          q.appendChild(b);
+        });
+        chat.appendChild(q);
+        chat.scrollTop = chat.scrollHeight;
+      }
+      return data;
+    }
+
+    function setSymptomPanelEnabled(enabled) {
+      symptomPanelEnabled = Boolean(enabled);
+      document.body.classList.toggle("foot-mode", symptomPanelEnabled);
+      symptomPanel.classList.toggle("disabled", !symptomPanelEnabled);
+      symptomChips.querySelectorAll("button").forEach((b) => { b.disabled = !symptomPanelEnabled; });
+      document.querySelectorAll(".chips-detail button").forEach((b) => { b.disabled = !symptomPanelEnabled; });
+      completeSelectionBtn.disabled = !symptomPanelEnabled;
+      clearSelectionBtn.disabled = !symptomPanelEnabled;
+      if (symptomPanelEnabled) {
+        chat.querySelectorAll(".quick").forEach((el) => el.remove());
+      }
+    }
+
+    function updateSelectionPreview() {
+      if (!selectedSymptoms.size) {
+        selectionPreview.textContent = "선택된 항목: 없음";
+        return;
+      }
+      const labels = symptomOrder
+        .filter((key) => selectedSymptoms.has(key))
+        .map((key) => {
+          const detail = selectedDetails[key];
+          return detail ? `${symptomMap[key]}(${detail})` : symptomMap[key];
+        });
+      selectionPreview.textContent = "선택된 항목: " + labels.join(", ");
+    }
+
+    function clearSelectionUI() {
+      selectedSymptoms.clear();
+      Object.keys(selectedDetails).forEach((k) => delete selectedDetails[k]);
+      document.querySelectorAll("#symptom-chips button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".chips-detail").forEach((panel) => {
+        panel.style.display = "none";
+        panel.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+      });
+      updateSelectionPreview();
+    }
+
+    function composeBaseMessage() {
+      return symptomOrder.filter((key) => selectedSymptoms.has(key)).map((key) => symptomMap[key]).join(", ");
+    }
+
+    function composeDetailMessage() {
+      const vals = [];
+      detailOrder.forEach((key) => {
+        if (selectedSymptoms.has(key)) vals.push(selectedDetails[key] || "1");
+      });
+      return vals.join(",");
+    }
+
+    document.querySelectorAll('[data-role="quick-start"]').forEach((b) => {
+      b.onclick = async () => { await sendMessage(b.dataset.msg || ""); };
+    });
+    symptomChips.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => {
+        if (!symptomPanelEnabled) return;
+        const key = b.dataset.symptom;
+        if (!key) return;
+        if (selectedSymptoms.has(key)) {
+          selectedSymptoms.delete(key);
+          delete selectedDetails[key];
+          b.classList.remove("active");
+          const detailPanel = document.getElementById(`detail-${key}`);
+          if (detailPanel) {
+            detailPanel.style.display = "none";
+            detailPanel.querySelectorAll("button").forEach((x) => x.classList.remove("active"));
+          }
+        } else {
+          selectedSymptoms.add(key);
+          b.classList.add("active");
+          const detailPanel = document.getElementById(`detail-${key}`);
+          if (detailPanel) detailPanel.style.display = "flex";
+        }
+        updateSelectionPreview();
+      };
+    });
+    document.querySelectorAll(".chips-detail button").forEach((b) => {
+      b.onclick = () => {
+        if (!symptomPanelEnabled) return;
+        const symptom = b.dataset.detailFor;
+        const value = b.dataset.value;
+        if (!symptom || !value) return;
+        selectedDetails[symptom] = value;
+        const group = document.querySelectorAll(`.chips-detail button[data-detail-for="${symptom}"]`);
+        group.forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        updateSelectionPreview();
+      };
+    });
+    document.getElementById("complete-selection").onclick = async () => {
+      if (!symptomPanelEnabled) return;
+      const baseMessage = composeBaseMessage();
+      if (!baseMessage) return;
+      add(baseMessage, "me");
+      const response = await callChat(baseMessage);
+      if (response && response.state === "Q_FOOT_DETAIL") {
+        const detailMessage = composeDetailMessage();
+        if (detailMessage) {
+          add(detailMessage, "me");
+          await callChat(detailMessage);
+        }
+      }
+    };
+    document.getElementById("clear-selection").onclick = () => {
+      if (!symptomPanelEnabled) return;
+      clearSelectionUI();
+    };
+    document.getElementById("send").onclick = () => {
+      const run = async () => {
+      const t = msg.value.trim();
+      msg.value = "";
+      await sendMessage(t);
+      };
+      run();
+    };
+    document.getElementById("reset").onclick = async () => {
+      sessionId = null;
+      sidEl.textContent = "없음";
+      chat.innerHTML = "";
+      clearSelectionUI();
+      bootPromise = callChat("시작");
+      await bootPromise;
+      bootPromise = null;
+    };
+    msg.addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("send").click(); });
+    clearSelectionUI();
+    updateGuidedPanels("Q_ENTRY");
+    updateInputPlaceholder("Q_ENTRY");
+    setUiStatus("ok", "UI 로드 완료");
+    bootPromise = callChat("시작");
+    bootPromise.finally(() => { bootPromise = null; });
+  </script>
+</body>
+</html>"""
 
     def _audit_event(event: str, session_id: str, channel: str, shop_id: str, policy_version: str, message: str = ""):
         """운영 로그(JSONL): 민감 원문은 저장하지 않고 추적 가능한 메타만 기록."""
@@ -245,6 +604,11 @@ try:
         customer_id: str | None = None
         shop_id: str = "default_shop"
         policy_version: str = "v1"
+
+    @app.get("/demo", response_class=HTMLResponse)
+    def demo_page():
+        """추천엔진 시연용 간단 프론트."""
+        return HTMLResponse(content=_DEMO_HTML)
 
     @app.post("/chat")
     def chat(req: MessageRequest):

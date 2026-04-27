@@ -8,7 +8,7 @@
 
 상태 흐름:
   Q_ENTRY → (1) 상품 선행: Q_DESIGN → Q_FOOT → Q_FOOT_DETAIL(선택) → Q_SIZE …
-         → (2) 기존: Q_MEAS → Q_MEAS_INPUT(선택) → Q_FOOT → Q_FOOT_DETAIL(선택) → Q_DESIGN
+         → (2) 기존: Q_MEAS → Q_MEAS_INPUT(발볼) → Q_MEAS_LENGTH(발길이) → Q_FOOT → Q_FOOT_DETAIL(선택) → Q_DESIGN
         → Q_SIZE → Q_SIZE_FIT → Q_FIT_EXP
         → (꽉낌=3) Q_TIGHT_HEEL_ON_UP
         → DIAGNOSING → RESULT → DONE
@@ -32,7 +32,8 @@ class SessionState(str, Enum):
     START         = "START"
     Q_ENTRY       = "Q_ENTRY"         # 진입: 상품 선행 vs 실측 우선
     Q_MEAS        = "Q_MEAS"          # Q0: 발길이·발볼 실측 가능 여부 (1차 분기)
-    Q_MEAS_INPUT  = "Q_MEAS_INPUT"    # Q0-1: 실측값 (가능한 경우)
+    Q_MEAS_INPUT  = "Q_MEAS_INPUT"    # Q0-1: 발볼 너비(mm) 입력
+    Q_MEAS_LENGTH = "Q_MEAS_LENGTH"   # Q0-2: 발길이(mm) 입력
     Q_FOOT        = "Q_FOOT"          # Q2: 발 형태
     Q_FOOT_DETAIL = "Q_FOOT_DETAIL"   # Q2-1: 세부 증상 (조건부)
     Q_DESIGN      = "Q_DESIGN"        # Q4: 디자인
@@ -351,10 +352,8 @@ class ConversationController:
                 session.state = SessionState.Q_MEAS_INPUT
                 return {
                     "text": (
-                        "발길이(mm), 발볼, 발등둘레 수치를 알려주세요.\n"
-                        "발볼은 너비(mm, 예: 92) 또는 둘레(mm, 예: 228) 모두 입력 가능합니다.\n"
-                        "발등둘레는 mm로 입력해 주세요. 모르면 생략 가능합니다.\n"
-                        "예: 235, 92, 230  또는  235, 228, 230  또는  235"
+                        "발볼 너비를 알려주세요.\n"
+                        "숫자로 입력해 주세요. (예: 92)"
                     ),
                     "quick_replies": [],
                     "state": session.state.value,
@@ -367,8 +366,8 @@ class ConversationController:
                 session.state = SessionState.Q_FOOT
                 return {
                     "text": (
-                        "신을 때 자주 불편한 부위를 골라주세요. (복수 선택 가능, 예: 3,4)\n"
-                        "좁음 / 보통 / 넓음 / 무지외반 / 발등 높음 / 통통함 / 앞코"
+                        "신을 때 자주 불편한 부위를 골라주세요.\n"
+                        "아래 버튼에서 복수 선택해 입력해 주세요."
                     ),
                     "quick_replies": ["좁음", "보통", "넓음", "무지외반", "발등 높음", "통통함", "앞코"],
                     "state": session.state.value,
@@ -376,37 +375,39 @@ class ConversationController:
                 }
             raise ValueError("네 또는 아니요를 선택해 주세요.")
 
-        # ── Q0-1: 실측 수치 ─────────────────────
+        # ── Q0-1: 발볼 너비(mm) ─────────────────
         if state == SessionState.Q_MEAS_INPUT:
-            raw = [x.strip() for x in text.replace("，", ",").split(",") if x.strip()]
             try:
-                fl = int(raw[0])
+                fb = float(text.replace("，", ",").split(",")[0].strip())
+                assert 70 <= fb <= 130
+            except Exception:
+                raise ValueError("발볼 너비(mm)를 숫자로 입력해 주세요. (예: 92)")
+            session.foot_ball_width_mm = fb
+            session.state = SessionState.Q_MEAS_LENGTH
+            return {
+                "text": (
+                    "발길이를 적어주세요.\n"
+                    "숫자로 입력해 주세요. (예: 235)"
+                ),
+                "quick_replies": [],
+                "state": session.state.value,
+                "done": False,
+            }
+
+        # ── Q0-2: 발길이(mm) ─────────────────────
+        if state == SessionState.Q_MEAS_LENGTH:
+            try:
+                fl = int(text.replace("，", ",").split(",")[0].strip())
                 assert 200 <= fl <= 280
             except Exception:
-                raise ValueError("발길이(mm)를 먼저 숫자로 입력해 주세요. (예: 235 또는 235, 228)")
+                raise ValueError("발길이(mm)를 숫자로 입력해 주세요. (예: 235)")
             session.foot_length_mm = fl
-            if len(raw) >= 2:
-                try:
-                    fb = float(raw[1])
-                    session.foot_ball_width_mm = fb if fb > 0 else None
-                except ValueError:
-                    session.foot_ball_width_mm = None
-            else:
-                session.foot_ball_width_mm = None
-
-            if len(raw) >= 3:
-                try:
-                    ins = float(raw[2])
-                    session.instep_circumference_mm = ins if ins > 0 else None
-                except ValueError:
-                    session.instep_circumference_mm = None
-            else:
-                session.instep_circumference_mm = None
+            session.instep_circumference_mm = None
             session.state = SessionState.Q_FOOT
             return {
                 "text": (
-                    "신을 때 자주 불편한 부위를 골라주세요. (복수 선택 가능, 예: 3,4)\n"
-                    "좁음 / 보통 / 넓음 / 무지외반 / 발등 높음 / 통통함 / 앞코"
+                    "신을 때 자주 불편한 부위를 골라주세요.\n"
+                    "아래 버튼에서 복수 선택해 입력해 주세요."
                 ),
                 "quick_replies": ["좁음", "보통", "넓음", "무지외반", "발등 높음", "통통함", "앞코"],
                 "state": session.state.value,
@@ -447,8 +448,8 @@ class ConversationController:
                 return {
                     "text": (
                         f"선택하신 스타일({val}) 기준으로 발 정보를 확인할게요.\n"
-                        "신을 때 자주 불편한 부위를 골라주세요. (복수 선택 가능, 예: 3,4)\n"
-                        "좁음 / 보통 / 넓음 / 무지외반 / 발등 높음 / 통통함 / 앞코"
+                        "신을 때 자주 불편한 부위를 골라주세요.\n"
+                        "아래 버튼에서 복수 선택해 입력해 주세요."
                     ),
                     "quick_replies": ["좁음", "보통", "넓음", "무지외반", "발등 높음", "통통함", "앞코"],
                     "state": session.state.value,
@@ -622,7 +623,7 @@ class ConversationController:
         if product_first:
             lead = "좋아요. 먼저 보고 계신 스타일을 골라주세요.\n\n"
         return {
-            "text": lead + "주로 찾으시는 스타일은 무엇인가요?\n구두 / 로퍼 / 단화 / 운동화",
+            "text": lead + "주로 찾으시는 스타일은 무엇인가요?\n아래 버튼에서 선택해 주세요.",
             "quick_replies": ["구두", "로퍼", "단화", "운동화"],
             "state": SessionState.Q_DESIGN.value,
             "done": False,
@@ -632,7 +633,7 @@ class ConversationController:
         return {
             "text": (
                 "지금 사이즈보다 한 치수 크게 신었을 때 뒤꿈치가 헐떡인 적이 있었나요?\n"
-                "네 / 아니요 / 해 본 적 없어요(잘 모르겠어요)\n"
+                "아래 버튼에서 선택해 주세요.\n"
                 "(응답은 사이즈 방향 결정에만 사용돼요)"
             ),
             "quick_replies": ["네", "아니요", "잘 모르겠어요"],
