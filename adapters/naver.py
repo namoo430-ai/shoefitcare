@@ -88,6 +88,8 @@ class NaverAdapter(ChannelAdapter):
         )
         postback = event.get("postback", {}) if isinstance(event.get("postback"), dict) else {}
         action = event.get("action", {}) if isinstance(event.get("action"), dict) else {}
+        action_data = action.get("data", {}) if isinstance(action.get("data"), dict) else {}
+        postback_data = postback.get("data", {}) if isinstance(postback.get("data"), dict) else {}
         text = self._pick_first_str(
             # event-level content first
             event_text_content.get("code"),
@@ -105,10 +107,20 @@ class NaverAdapter(ChannelAdapter):
             action.get("label"),
             action.get("payload"),
             action.get("value"),
+            action_data.get("code"),
+            action_data.get("text"),
+            action_data.get("label"),
+            action_data.get("payload"),
+            action_data.get("value"),
             postback.get("text"),
             postback.get("label"),
             postback.get("payload"),
             postback.get("code"),
+            postback_data.get("code"),
+            postback_data.get("text"),
+            postback_data.get("label"),
+            postback_data.get("payload"),
+            postback_data.get("value"),
             # root-level text content
             event_text_content.get("code")
             or text_content.get("code"),
