@@ -35,3 +35,10 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Spreadsheet / LibreOffice lock files
+.~lock.*
+**/.~lock.*
+
+# Ad-hoc zip at repo root (archives go under deliverables/archives/)
+/files.zip
+

@@ -689,6 +689,19 @@ try:
         store.save(session)
         _audit_event("naver_webhook", session.session_id, session.channel, session.shop_id, session.policy_version, inbound.message)
 
+        # 네이버 채널에 빈 텍스트가 전달되면 콘솔에서 "-"로 보일 수 있으므로 방어.
+        text_out = str(result.get("text") or "").strip()
+        if text_out in ("", "-"):
+            result["text"] = _FALLBACK_TEXT
+            _audit_event(
+                "naver_empty_text_fallback",
+                session.session_id,
+                session.channel,
+                session.shop_id,
+                session.policy_version,
+                inbound.message,
+            )
+
         # 옵션: 네이버 보내기 API로 응답 푸시 (시나리오 고정 응답을 대체/보완)
         # 푸시가 성공하면 웹훅 동기 응답(send)을 생략해 중복 발화를 방지한다.
         pushed = _send_naver_push(inbound, result, session)
@@ -763,6 +776,18 @@ try:
             filtered.append(row)
 
         event_counter = Counter(row.get("event", "unknown") for row in filtered)
+        recent_samples = []
+        for row in filtered[-5:]:
+            recent_samples.append(
+                {
+                    "ts": row.get("ts"),
+                    "event": row.get("event"),
+                    "session_id": row.get("session_id"),
+                    "shop_id": row.get("shop_id"),
+                    "policy_version": row.get("policy_version"),
+                    "message_len": row.get("message_len", 0),
+                }
+            )
         return {
             "scope": {
                 "shop_id": shop_id,
@@ -776,6 +801,7 @@ try:
                 round(event_counter.get("naver_auto_closed", 0) / len(filtered), 4)
                 if filtered else 0.0
             ),
+            "recent_samples": recent_samples,
         }
 
 except ImportError:

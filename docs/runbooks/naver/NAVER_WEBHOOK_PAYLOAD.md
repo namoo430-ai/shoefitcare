@@ -7,17 +7,29 @@
 
 - 사용자 ID:
   - `user.id`
+  - `user.userId`
   - `user_id`
+  - `userId`
   - `senderId`
+  - `sender_id`
 - 메시지 텍스트:
+  - `event.textContent.code`
+  - `event.textContent.text`
+  - `event.code`
   - `text`
   - `message`
   - `event.text`
   - `event.utterance`
+  - `event.value`
+  - `action.code`
+  - `postback.code`
 - 세션 키:
   - `session.id`
+  - `session.sessionId`
   - `session_id`
+  - `sessionId`
   - `conversationId`
+  - `conversation_id`
   - 없으면 `user_id` fallback
 - 운영 메타:
   - `shop_id` (없으면 `default_shop`)
@@ -39,12 +51,15 @@
 
 ```json
 {
-  "text": "응답 텍스트",
-  "quickReplies": [
-    { "label": "1", "text": "1" }
-  ],
-  "done": false,
-  "diagnosis": null,
+  "event": "send",
+  "textContent": {
+    "text": "응답 텍스트",
+    "quickReply": {
+      "buttonList": [
+        { "type": "TEXT", "data": { "title": "1·2단계 추천", "code": "1" } }
+      ]
+    }
+  },
   "session_id": "nv_session_001"
 }
 ```

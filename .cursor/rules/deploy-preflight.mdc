@@ -20,9 +20,9 @@ Before any public deploy or GitHub upload, enforce this sequence:
 
 # Required Docs
 
-- `SECURITY_PREP_1MIN_CHECKLIST.md`
-- `DEPLOY_RENDER.md`
-- `NAVER_WEBHOOK_PAYLOAD.md`
+- `docs/runbooks/security/SECURITY_PREP_1MIN_CHECKLIST.md`
+- `docs/runbooks/deploy/DEPLOY_RENDER.md`
+- `docs/runbooks/naver/NAVER_WEBHOOK_PAYLOAD.md`
 
 # Release Gate
 

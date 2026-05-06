@@ -4,7 +4,7 @@
 - API timeout/fallback 보호 로직 반영 (`api.py`)
 - 에러/타임아웃 운영 로그 이벤트 반영 (`data/logs/chat_events.jsonl`)
 - 데모 자동 리플레이 3시나리오 추가 (`scripts/demo_replay_3cases.py`)
-- 네이버 콘솔 실연동 체크리스트 작성 (`NAVER_CONSOLE_0417_CHECKLIST.md`)
+- 네이버 콘솔 실연동 체크리스트 작성 (`docs/runbooks/naver/NAVER_CONSOLE_0417_CHECKLIST.md`)
 
 ### 사용 커맨드
 - `python scripts/demo_replay_3cases.py`
