@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from core.engine import PRODUCT_CATALOG
+from core.engine import PRODUCT_CATALOG, _normalize_foot_issues
 
 
 @dataclass
@@ -88,8 +88,21 @@ class HybridProductRecommender:
         if not candidates:
             return []
 
-        # 1차 필터: 디자인 + 핏 근접도
-        filtered = self._filter_candidates(candidates, res.recommended_fit)
+        # 1차 필터: Round 1 / 5-A 회귀 반영.
+        # 진단 결과와 정확히 같은 카테고리·사이즈·핏 후보가 있으면 fallback 후보를 섞지 않는다.
+        # TOP3 개수를 채우려고 인접 사이즈/핏/카테고리를 임의 대체하면 사용자가 진단 결과를 신뢰하기 어렵다.
+        filtered = self._strict_match_candidates(candidates, inp, res)
+        if len(filtered) < 3:
+            known_ids = {c.product_id for c in filtered}
+            for c in self._build_exact_catalog_candidates(inp, res):
+                if c.product_id not in known_ids:
+                    filtered.append(c)
+                    known_ids.add(c.product_id)
+                if len(filtered) >= 3:
+                    break
+        if not filtered:
+            # 정확 후보가 하나도 없을 때만 기존 근접 핏 fallback을 사용한다.
+            filtered = self._filter_candidates(candidates, res.recommended_fit)
         if not filtered:
             filtered = candidates
 
@@ -177,7 +190,7 @@ class HybridProductRecommender:
             specs = fit_specs.get(pid, [])
             if not specs:
                 continue
-            chosen = self._pick_nearest_size_spec(specs, target_size)
+            chosen = self._pick_nearest_size_spec(specs, target_size, str(res.recommended_fit).strip())
             if not chosen:
                 continue
 
@@ -211,8 +224,49 @@ class HybridProductRecommender:
         # 타깃핏 ±1 단계까지만 우선 후보
         return [r for r in rows if self._fit_distance(r.fit, target_fit) <= 1]
 
+    def _strict_match_candidates(self, rows: list[Candidate], inp, res) -> list[Candidate]:
+        """진단 결과와 카테고리·사이즈·핏이 모두 같은 후보만 반환."""
+        target_design = str(inp.design).strip()
+        target_fit = str(res.recommended_fit).strip()
+        target_size = int(res.final_size)
+        return [
+            r
+            for r in rows
+            if str(r.category).strip() == target_design
+            and int(r.size_mm) == target_size
+            and str(r.fit).strip() == target_fit
+        ]
+
+    def _build_exact_catalog_candidates(self, inp, res) -> list[Candidate]:
+        """
+        CSV에 정확 후보가 부족할 때 쓰는 안전 보조 후보.
+
+        실상품 CSV fallback이 사이즈/핏을 흔드는 것보다, 진단 결과와 일치하는 카탈로그 후보를
+        노출하는 편이 Round 1의 5-A 문제를 줄인다. 운영 데이터가 보강되면 CSV exact 후보가 우선된다.
+        """
+        target_fit = str(res.recommended_fit).strip()
+        out: list[Candidate] = []
+        for p in PRODUCT_CATALOG.get(inp.design, []):
+            if str(p.get("fit", "")).strip() != target_fit:
+                continue
+            meta = PRODUCT_META.get(p["id"], {"tags": [], "review_count": 0, "rating": 0.0})
+            out.append(
+                Candidate(
+                    product_id=f"catalog:{p['id']}",
+                    name=p["name"],
+                    category=inp.design,
+                    size_mm=int(res.final_size),
+                    fit=p["fit"],
+                    width_code=p["width_code"],
+                    tags=list(meta.get("tags", [])),
+                    review_count=int(meta.get("review_count", 0)),
+                    rating=float(meta.get("rating", 0.0)),
+                )
+            )
+        return out
+
     def _rank(self, rows: list[Candidate], inp, res) -> list[Candidate]:
-        issues = set(inp.foot_issues or [])
+        issues = _normalize_foot_issues(inp.foot_issues)
         for r in rows:
             # Fit (가중치 중심)
             dist = self._fit_distance(r.fit, res.recommended_fit)
@@ -279,11 +333,12 @@ class HybridProductRecommender:
 
     def _attach_explanations(self, rows: list[Candidate], inp, res) -> None:
         # 기본 템플릿 설명
+        fi = _normalize_foot_issues(inp.foot_issues)
         for r in rows:
             reasons = [f"{res.recommended_fit} 추천 기준과 잘 맞아요"]
-            if "넓은발볼_우호" in r.tags and "넓음" in (inp.foot_issues or []):
+            if "넓은발볼_우호" in r.tags and "넓음" in fi:
                 reasons.append("넓은 발볼 대응 태그가 있어요")
-            if "무지외반_우호" in r.tags and "무지외반" in (inp.foot_issues or []):
+            if "무지외반_우호" in r.tags and "무지외반" in fi:
                 reasons.append("무지외반 완화에 유리한 태그가 있어요")
             if r.review_count >= 100 and r.rating >= 4.5:
                 reasons.append("후기 수와 평점이 안정적이에요")
@@ -398,10 +453,16 @@ class HybridProductRecommender:
                     bucket["returned"] += 1
         return out
 
-    def _pick_nearest_size_spec(self, specs: list[dict], target_size: int) -> dict | None:
+    def _pick_nearest_size_spec(self, specs: list[dict], target_size: int, target_fit: str | None = None) -> dict | None:
         if not specs:
             return None
-        return sorted(specs, key=lambda row: abs(int(row.get("size_mm", target_size)) - target_size))[0]
+        return sorted(
+            specs,
+            key=lambda row: (
+                abs(int(row.get("size_mm", target_size)) - target_size),
+                self._fit_distance(str(row.get("fit_line", "")).strip(), target_fit or ""),
+            ),
+        )[0]
 
     def _to_int(self, value, default):
         try:

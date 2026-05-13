@@ -79,6 +79,9 @@ class ChatSession:
     # 진입: True = 디자인(Q4) 먼저 → 발(Q2) → 사이즈(Q5)…
     product_first: bool = False
 
+    # Q2-1: 세부 증상 질문 순서 (예: ["3","4"]). 저장소 직렬화 필수 — 미저장 시 /chat 재로드마다 상실됨.
+    foot_detail_pending: Optional[list[str]] = None
+
     # 1차 분기: 실측 가능 시 수치 (없으면 경험 경로)
     measurement_available: Optional[bool] = None
     foot_length_mm:        Optional[int]   = None
@@ -138,6 +141,7 @@ class ChatSession:
             "foot_ball_width_mm": self.foot_ball_width_mm,
             "instep_circumference_mm": self.instep_circumference_mm,
             "product_first": self.product_first,
+            "foot_detail_pending": self.foot_detail_pending,
             "conversation_history": self.conversation_history,
             "diagnosis_result": self.diagnosis_result,
             "created_at": self.created_at,
@@ -177,6 +181,8 @@ class ChatSession:
         sess.foot_ball_width_mm = d.get("foot_ball_width_mm")
         sess.instep_circumference_mm = d.get("instep_circumference_mm")
         sess.product_first = d.get("product_first", False)
+        _fdp = d.get("foot_detail_pending")
+        sess.foot_detail_pending = _fdp if isinstance(_fdp, list) else None
         sess.conversation_history = d.get("conversation_history", [])
         sess.diagnosis_result     = d.get("diagnosis_result")
         sess.created_at      = d.get("created_at", sess.created_at)
@@ -318,7 +324,7 @@ class ConversationController:
         if session.state == SessionState.Q_FIT_EXP:
             return ["잘 맞아요", "크게 신었는데 헐떡여요", "볼이 꽉 껴서 불편해요"]
         if session.state == SessionState.Q_TIGHT_HEEL_ON_UP:
-            return ["네", "아니요", "잘 모르겠어요"]
+            return ["네", "아니요", "신어본 적 없음"]
         return []
 
     def _process(self, session: ChatSession, text: str) -> dict:
@@ -517,10 +523,10 @@ class ConversationController:
                 session.heel_slip_when_one_size_up = True
             elif self._is_no(text):
                 session.heel_slip_when_one_size_up = False
-            elif text in ("3", "모름", "잘모름", "잘 모르겠어요", "해본 적 없어요", "해본적없어요"):
+            elif self._is_never_tried_one_size_up_heel_slip(text):
                 session.heel_slip_when_one_size_up = None
             else:
-                raise ValueError("네/아니요/잘 모르겠어요 중에서 선택해 주세요.")
+                raise ValueError("네/아니요/신어본 적 없음 중에서 선택해 주세요.")
             session.state = SessionState.DIAGNOSING
             try:
                 return self._run_diagnosis(session)
@@ -572,8 +578,8 @@ class ConversationController:
         if "7" in selected:
             lines.append("[앞코] 불편함: 1.발끝 닿음  2.너비 좁음  3.새끼발가락 통증")
 
-        # 어떤 세부 질문을 기다리는지 세션에 기록
-        session._pending_details = selected  # 임시 플래그
+        # 어떤 세부 질문을 기다리는지 세션에 기록 (직렬화되어 /chat 재로드 후에도 유지)
+        session.foot_detail_pending = list(selected)
         detail_count = len(lines)
         if detail_count <= 1:
             guide = "숫자 1개만 입력해 주세요. (예: 3)"
@@ -589,7 +595,7 @@ class ConversationController:
 
     def _process_foot_detail(self, session: ChatSession, text: str) -> dict:
         vals = [v.strip() for v in text.split(",")]
-        pending = getattr(session, "_pending_details", [])
+        pending = session.foot_detail_pending or []
         idx = 0
         if "3" in pending:
             session.wide_severity = vals[idx] if idx < len(vals) else "1"
@@ -602,6 +608,8 @@ class ConversationController:
             idx += 1
         if "7" in pending:
             session.toe_detail = vals[idx] if idx < len(vals) else "1"
+
+        session.foot_detail_pending = None
 
         if session.product_first:
             session.state = SessionState.Q_SIZE
@@ -636,10 +644,27 @@ class ConversationController:
                 "아래 버튼에서 선택해 주세요.\n"
                 "(응답은 사이즈 방향 결정에만 사용돼요)"
             ),
-            "quick_replies": ["네", "아니요", "잘 모르겠어요"],
+            "quick_replies": ["네", "아니요", "신어본 적 없음"],
             "state": session.state.value,
             "done": False,
         }
+
+    @staticmethod
+    def _normalize_preferred_style(val: Optional[str]) -> str:
+        """Q5-0 값이 숫자/변형 문자열로 들어와도 엔진 FIT_ORDER와 맞춘다."""
+        if not val:
+            return "편한핏"
+        t = str(val).strip()
+        if t in ("기본핏", "편한핏", "아주 편한핏"):
+            return t
+        if t in ("1", "2", "3"):
+            return {"1": "기본핏", "2": "편한핏", "3": "아주 편한핏"}.get(t, "편한핏")
+        c = t.replace(" ", "")
+        if c in ("편안핏", "편안한핏"):
+            return "편한핏"
+        if c == "아주편한핏":
+            return "아주 편한핏"
+        return "편한핏"
 
     def _run_diagnosis(self, session: ChatSession) -> dict:
         """진단 실행 + 결과 저장 + 출력 생성"""
@@ -653,7 +678,7 @@ class ConversationController:
 
         inp = CustomerInput(
             session_id      = session.session_id,
-            preferred_style = session.preferred_style or "편한핏",
+            preferred_style = self._normalize_preferred_style(session.preferred_style),
             foot_issues     = session.foot_issues or [],
             hallux_severity = session.hallux_severity,
             wide_severity   = session.wide_severity,
@@ -701,12 +726,16 @@ class ConversationController:
             if res.stretch_step > 0
             else "없음"
         )
-        additional_label = ", ".join(res.additional_works) if res.additional_works else "없음"
-        summary_line = (
-            "진단 결과 안내드릴게요 🙂\n"
-            f"추천 핏은 [{res.recommended_fit}]이고, 추천 사이즈는 {res.final_size}mm예요.\n"
-            f"발볼 늘림은 {stretch_label}, 추가 보정은 {additional_label}로 안내드려요."
-        )
+        summary_lines = [
+            "진단 결과 안내드릴게요 🙂",
+            f"추천 핏은 [{res.recommended_fit}]이고, 추천 사이즈는 {res.final_size}mm예요.",
+            f"발볼 늘림은 {stretch_label} 안내드려요.",
+        ]
+        if res.additional_works:
+            summary_lines.append(
+                "추가 가공·보정은 " + ", ".join(res.additional_works) + " 안내드려요."
+            )
+        summary_line = "\n".join(summary_lines)
         reason_line = f"추천 이유: {res.recommendation_reason}"
         summary_reason = self._build_mobile_friendly_summary_reason(inp, res, top3 or [])
 
@@ -742,8 +771,12 @@ class ConversationController:
         lines = [
             f"이번 추천은 '{issue_text}' 불편을 줄이는 데 우선순위를 두고 맞췄어요.",
             f"권장 사이즈는 {res.final_size}mm이고, 핏은 [{res.recommended_fit}] 기준으로 안정감 있게 골랐어요.",
-            "추천 상품 상세페이지를 비교해 보시고, 핏 라인 참고하셔서 구매해 주세요 ^^",
         ]
+        if res.stretch_step > 0:
+            lines.append(
+                f"발볼 늘림은 {res.stretch_step}단계({res.stretch_mm}mm)까지 반영했어요. 주문 시 발볼 늘림 옵션을 함께 선택해 주세요."
+            )
+        lines.append("추천 상품 상세페이지를 비교해 보시고, 핏 라인 참고하셔서 구매해 주세요 ^^")
         return "\n".join(lines)
 
     def _short_product_label(self, name: str, max_len: int = 28) -> str:
@@ -820,6 +853,22 @@ class ConversationController:
     def _is_no(self, text: str) -> bool:
         t = (text or "").strip().replace(" ", "")
         return t in ("2", "아니요", "아니오", "노", "no", "n")
+
+    def _is_never_tried_one_size_up_heel_slip(self, text: str) -> bool:
+        """Q5-3: 한 치수 업 착화 경험 없음·불명 → heel_slip None (기존 '잘 모르겠어요' 호환)."""
+        raw = (text or "").strip()
+        t = raw.replace(" ", "")
+        if t in ("3", "모름", "잘모름", "잘모르겠어요", "해본적없어요", "신어본적없음", "안신어봤어요"):
+            return True
+        if raw in (
+            "잘 모르겠어요",
+            "해본 적 없어요",
+            "신어본 적 없음",
+            "신어 본 적 없음",
+            "안 신어봤어요",
+        ):
+            return True
+        return False
 
     def _entry_key(self, text: str) -> str:
         t = (text or "").strip().replace(" ", "")

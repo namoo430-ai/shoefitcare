@@ -68,6 +68,35 @@ STRETCH_EQUIVALENCE = {
     int(k): int(v) for k, v in _stretch_raw.items()
 } if _stretch_raw else {1: SIZE_STEP_MM, 2: SIZE_STEP_MM * 2, 3: SIZE_STEP_MM * 3}
 
+
+FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _norm_severity(val: object, default: str = "0") -> str:
+    """세부 단계가 int/전각숫자로 들어와도 문자열 분기와 안전하게 비교 (TC05 발등 등)."""
+    if val is None:
+        return default
+    s = str(val).strip().translate(FULLWIDTH_DIGIT_TRANS)
+    return s if s else default
+
+
+def _normalize_foot_issues(foot_issues: Optional[list]) -> set[str]:
+    """채널별 이슈 표기 차이를 통일 (발등높음 vs '발등 높음')."""
+    out: set[str] = set()
+    for x in foot_issues or []:
+        if x is None:
+            continue
+        t = str(x).strip()
+        if not t:
+            continue
+        compact = t.replace(" ", "")
+        if compact in ("발등높음", "발등높음증상"):
+            out.add("발등 높음")
+        else:
+            out.add(t)
+    return out
+
+
 # ──────────────────────────────────────────────
 # 2. 데이터 클래스 정의
 # ──────────────────────────────────────────────
@@ -149,7 +178,7 @@ class DiagnosisEngine:
     FIT_SCORE = {"기본핏": 0, "편한핏": 1, "아주 편한핏": 2}
 
     def run(self, inp: CustomerInput) -> DiagnosisResult:
-        issues = set(inp.foot_issues)
+        issues = _normalize_foot_issues(inp.foot_issues)
         path = "measured" if inp.measurement_available else "experience"
         confidence = self._compute_confidence(inp)
         composite_score = self._composite_score(inp, issues)
@@ -159,11 +188,29 @@ class DiagnosisEngine:
 
         # Step 2. 기성화 추천 (최우선)
         product, fit, reason, ready_made = self._recommend_product(inp, issues)
+        # 발등 이슈인데 분기 누락 등으로 기본핏만 나온 경우 선호 핏으로 복구 (TC05 등)
+        if "발등 높음" in issues and fit == "기본핏":
+            catalog = PRODUCT_CATALOG.get(inp.design, [])
+            anchor_fit = self._anchor_preferred_fit(inp)
+            alt = self._find_by_fit(catalog, anchor_fit) or self._find_by_width(catalog, "EE") or product
+            product, fit, reason, ready_made = (
+                alt,
+                anchor_fit,
+                f"{reason} [발등: 선호 핏({anchor_fit}) 유지]".strip(),
+                True,
+            )
         ready_made_option = ""
         stretch_option = ""
 
         # 경험 경로 + 낮은 신뢰도는 보수 추천으로 리스크 완화
-        if path == "experience" and confidence < 0.72 and inp.fit_experience != "잘 맞음":
+        # 5-B 정책 (Q5_TIGHT_POLICY_TABLE.md §6.1): 꽉낌은 전용 분기에서 단일 옵션으로 처방하므로
+        # 보수 핏 상향(B 옵션)과 합산되지 않도록 여기서는 적용하지 않는다.
+        if (
+            path == "experience"
+            and confidence < 0.72
+            and inp.fit_experience != "잘 맞음"
+            and "꽉" not in inp.fit_experience
+        ):
             product, fit, reason, ready_made = self._apply_experience_conservative_fit(
                 inp, product, fit, reason, ready_made, confidence
             )
@@ -172,7 +219,9 @@ class DiagnosisEngine:
         # 단, 앞코 발끝 닿음(발길이 늘림 필요)과 복합이면 무조건 +5mm를 유지한다.
         choice_mode = False
         choice_note = ""
-        is_toe_length_plus_tight = ("꽉" in inp.fit_experience) and (inp.toe_detail == "1")
+        is_toe_length_plus_tight = ("꽉" in inp.fit_experience) and (
+            _norm_severity(inp.toe_detail) == "1"
+        )
         if path == "measured" and ("꽉" in inp.fit_experience) and (not is_toe_length_plus_tight):
             choice_mode = True
             choice_note = self._build_measured_tight_choice_note(inp, issues)
@@ -182,15 +231,15 @@ class DiagnosisEngine:
         elif is_toe_length_plus_tight:
             reason = reason + " [앞코 발끝 닿음+꽉낌 복합: 한 사이즈 업(+5mm) 고정]"
 
-        # Step 2-2. 경험 경로 + 꽉낌 + (복합점수>=3 또는 발등 이슈): 한 사이즈 업 우선
+        # Step 2-2. 경험 경로 + 꽉낌 + (Q5-3 분기): 한 사이즈 업(옵션 A) 단독 적용
+        # 5-B 정책 (Q5_TIGHT_POLICY_TABLE.md §6.1, §6.3): 사이즈 업 시 핏라인을 추가 상향하지 않는다.
+        # 핏라인은 _recommend_product가 산출한 값(또는 사용자 선호)을 그대로 유지하여,
+        # 옵션 A(사이즈 업)와 옵션 B(핏 상향)가 합산되지 않도록 보장.
         if path == "experience" and ("꽉" in inp.fit_experience):
             should_upsize = self._should_upsize_for_tight(inp, issues)
-            option_product = self._find_by_fit(PRODUCT_CATALOG.get(inp.design, []), "아주 편한핏")
-            if should_upsize and option_product:
-                product = option_product
-                fit = "아주 편한핏"
+            if should_upsize:
                 reason = self._tight_upsize_reason(inp, issues)
-            elif not should_upsize:
+            else:
                 reason = "볼 압박(꽉낌) 단독: 사이즈 업 없이 핏/가공 보정 우선"
 
         # Step 3. 상담 필요 여부 판단
@@ -201,7 +250,7 @@ class DiagnosisEngine:
             stretch_step, stretch_mm, stretch_reason = 0, 0.0, "고객 선택 후 적용(옵션 A/B 중 선택)"
         else:
             stretch_step, stretch_mm, stretch_reason = self._decide_stretch(
-                inp, issues, ready_made, is_consult
+                inp, issues, ready_made, is_consult, size_adjusted=size_adjusted, recommended_fit=fit
             )
 
         # Step 5. 추가 가공
@@ -254,11 +303,33 @@ class DiagnosisEngine:
         score = 0.58
         if inp.fit_experience == "잘 맞음":
             score += 0.10
-        if "무지외반" in inp.foot_issues and inp.hallux_severity in ("2", "3"):
+        fi = _normalize_foot_issues(inp.foot_issues)
+        if "무지외반" in fi and _norm_severity(inp.hallux_severity) in ("2", "3"):
             score -= 0.08
-        if "발등 높음" in inp.foot_issues and inp.instep_severity in ("2", "3"):
+        instep_c = _norm_severity(inp.instep_severity)
+        if instep_c not in ("1", "2", "3") and "발등 높음" in fi:
+            instep_c = "1"
+        if "발등 높음" in fi and instep_c in ("2", "3"):
             score -= 0.06
         return max(0.35, min(score, 0.82))
+
+    def _anchor_preferred_fit(self, inp: CustomerInput) -> str:
+        """Q5-0 선호 핏을 FIT_ORDER 표기로 고정 (숫자·공백·구어 변형 허용)."""
+        order = self.FIT_ORDER
+        raw = (getattr(inp, "preferred_style", None) or "").strip()
+        if raw in order:
+            return raw
+        if raw in ("1", "2", "3"):
+            mapped = {"1": "기본핏", "2": "편한핏", "3": "아주 편한핏"}.get(raw, "편한핏")
+            return mapped if mapped in order else "편한핏"
+        compact = raw.replace(" ", "")
+        if compact in ("편한핏", "편안핏", "편안한핏"):
+            return "편한핏"
+        if compact == "기본핏":
+            return "기본핏"
+        if compact in ("아주편한핏", "아주편한핏라인") and "아주 편한핏" in order:
+            return "아주 편한핏"
+        return "편한핏"
 
     def _apply_experience_conservative_fit(
         self,
@@ -328,12 +399,12 @@ class DiagnosisEngine:
         # 3) 꽉낌은 길이는 대체로 충족으로 보고 과한 업사이즈를 제한
         #    - Q5-3 응답을 직접 분기 트리거로 사용한다.
         if "꽉" in inp.fit_experience:
-            if inp.heel_slip_when_one_size_up is False:
+            if self._should_upsize_for_tight(inp, issues):
                 return inp.original_size + 5, True
             if inp.heel_slip_when_one_size_up is True:
                 return inp.original_size - 5, True
             # 정보가 불확실(해본 적 없음)할 때는 심한 무지외반만 안전측으로 업사이즈
-            if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+            if inp.heel_slip_when_one_size_up is None and _norm_severity(inp.hallux_severity) == "3":
                 return inp.original_size + 5, True
         return inp.original_size, False
 
@@ -344,8 +415,11 @@ class DiagnosisEngine:
         if not catalog:
             return {"id": "unknown", "name": "미등록 디자인"}, "기본핏", "카탈로그 없음", False
 
-        hallux = inp.hallux_severity
-        instep = inp.instep_severity
+        hallux = _norm_severity(inp.hallux_severity)
+        instep = _norm_severity(inp.instep_severity)
+        # 발등 증상은 있는데 Q2-1 세부가 비어(0) 있으면 기존 로직이 기본핏으로 떨어짐 → 약간(1)으로 간주
+        if "발등 높음" in issues and instep not in ("1", "2", "3"):
+            instep = "1"
 
         # 심한 복합증상 → 기성화 한계
         if "무지외반" in issues and hallux == "3":
@@ -375,9 +449,14 @@ class DiagnosisEngine:
             product = self._find_by_width(catalog, "EE") or catalog[-1]
             return product, "편한핏", "발등 심함: 기성화 + 상담 필요", False
 
+        if "발등 높음" in issues and instep in ("1", "2"):
+            anchor_fit = self._anchor_preferred_fit(inp)
+            product = self._find_by_fit(catalog, anchor_fit) or self._find_by_width(catalog, "EE") or catalog[-1]
+            return product, anchor_fit, "발등 높음: 기존 선호 핏 유지 + 사이즈/발등 보정 우선", True
+
         # Q5-1 "잘 맞음"이면 고객이 선택한 Q5 앵커 핏을 우선 반영
         if inp.fit_experience == "잘 맞음":
-            anchor_fit = inp.preferred_style if inp.preferred_style in self.FIT_ORDER else "편한핏"
+            anchor_fit = self._anchor_preferred_fit(inp)
             anchor_product = self._find_by_fit(catalog, anchor_fit)
             if anchor_product:
                 return anchor_product, anchor_fit, "Q5 기준사이즈/핏 앵커 기반 고정 추천", True
@@ -471,18 +550,18 @@ class DiagnosisEngine:
         # 운영 정책: 꽉낌은 Q5-3 응답 기반 사이즈 분기 우선.
         if "꽉" in inp.fit_experience and self._should_upsize_for_tight(inp, issues):
             return False, ""
-        if "무지외반" in issues and inp.hallux_severity == "3":
+        if "무지외반" in issues and _norm_severity(inp.hallux_severity) == "3":
             return True, "무지외반 심함: 돌출부 형태 직접 확인 필요"
-        if "발등 높음" in issues and inp.instep_severity == "3":
+        if "발등 높음" in issues and _norm_severity(inp.instep_severity) == "3":
             return True, "발등 심함: 발등 높이 직접 측정 필요"
-        hallux_score = self._safe_int(inp.hallux_severity)
+        hallux_score = self._safe_int(_norm_severity(inp.hallux_severity))
         combo_score = hallux_score + (1 if "넓음" in issues else 0)
         if ("무지외반" in issues and "넓음" in issues) and combo_score >= COMPOSITE_CONSULT_SCORE:
             return True, f"무지외반+넓은발볼 복합 점수({combo_score})로 상담 권장"
         if path == "experience" and confidence < 0.62:
             if "넓음" in issues and "무지외반" in issues:
                 return True, "실측 없음·복합 증상: 전화 상담 후 주문 권장"
-            if "발등 높음" in issues and inp.instep_severity in ("1", "2"):
+            if "발등 높음" in issues and _norm_severity(inp.instep_severity) in ("1", "2"):
                 return True, "실측 없음·발등 이슈: 상담 후 맞춤 권장"
         return False, ""
 
@@ -492,17 +571,43 @@ class DiagnosisEngine:
         issues: set,
         ready_made: bool,
         is_consult: bool,
+        size_adjusted: bool = False,
+        recommended_fit: Optional[str] = None,
     ) -> tuple[int, float, str]:
         """
         기성화로 해결 가능하면 가공 최소화.
         기성화 부족분만 가공으로 보완.
+
+        5-B / 등가 환산 정책(Q5_TIGHT_POLICY_TABLE.md §6.2 ~ §6.4):
+        - 보정 단위는 발볼 1단계 = 1점, 사이즈 +5mm = 2점, 핏 한 단계 상향 = 1점, 핀포인트는 0점.
+        - 사이즈 업이 이미 적용되면(`size_adjusted=True`) 발볼 늘림 강도에서 2단계분을 차감한다.
+        - 무지외반 심함도 동일한 등가 규칙을 따른다. 단 핀포인트 무지외반 늘림은 점수 외 별도 가공.
         """
+        size_credit = 2 if size_adjusted else 0
+
+        def _adjusted_steps(target: int) -> int:
+            """사이즈 업 등가 차감 후 발볼 늘림 단계."""
+            return max(0, target - size_credit)
+
         if is_consult:
             return 0, 0.0, "상담 후 결정"
 
-        # 심한 무지외반 → 기성화 부족 → 3단계 가공
-        if "무지외반" in issues and inp.hallux_severity == "3":
-            return 3, 7.5, self._build_stretch_reason(inp, 3, 7.5, "기성화 EEE 폭으로도 부족한 돌출부 핀포인트 보정")
+        # 심한 무지외반 → 기본 3단계 보정. 사이즈 업(+2점)·핏 상향(+1점/단계)이 이미 들어간 경우 등가 차감
+        # (Q5_TIGHT_POLICY_TABLE.md §6.2/§6.4: 사이즈 +5mm = 2단계, 핏 한 단계 상향 = 1단계)
+        if "무지외반" in issues and _norm_severity(inp.hallux_severity) == "3":
+            effective_base = self._effective_stretch_score(inp, 3, recommended_fit)
+            steps = max(0, effective_base - size_credit)
+            stretch_mm = steps * 2.5
+            if steps == 0:
+                if size_adjusted:
+                    return 0, 0.0, "무지외반 심함 + 사이즈 업 + 핏 상향 등가 합산: 핀포인트 무지외반 늘림만 별도 적용"
+                return 0, 0.0, "무지외반 심함 + 핏 상향 등가로 보정 강도 충족: 핀포인트 무지외반 늘림만 별도 적용"
+            base_reason = (
+                "기성화 EEE 폭으로도 부족한 돌출부 핀포인트 보정"
+                if not size_adjusted
+                else "사이즈 업·핏 상향 등가 합산 후 잔여 강도만 추가 (오버사이즈 방지)"
+            )
+            return steps, stretch_mm, self._build_stretch_reason(inp, steps, stretch_mm, base_reason)
 
         # 헐떡임으로 사이즈 다운 → 줄어든 볼 공간 보완 (1단계)
         if "헐떡임" in inp.fit_experience and ("넓음" in issues or "무지외반" in issues):
@@ -513,28 +618,30 @@ class DiagnosisEngine:
                 reason += " [구두 기준: 기본핏 8.0 -> 편한핏 8.2]"
             return 1, 2.5, reason
 
-        # 꽉낌은 Q5-3 응답 기반으로 늘림 우선순위를 부여
+        # 꽉낌은 Q5-3 응답 기반 + 등가 환산으로 늘림을 결정
         if "꽉" in inp.fit_experience:
-            if inp.heel_slip_when_one_size_up is False:
-                return 0, 0.0, "업사이즈(한 치수 업) 수용 가능: 과늘림 방지를 위해 추가 늘림 비활성화"
             if inp.heel_slip_when_one_size_up is True:
                 if "앞코" in issues:
                     return 1, 2.5, self._build_stretch_reason(inp, 1, 2.5, "업사이즈 헐떡임 이력: 보수 사이즈 + 앞코/볼 압박 완화 보정")
                 return 0, 0.0, "업사이즈 헐떡임 이력: 보수 사이즈 우선, 추가 늘림 최소화"
-            # 해본 적 없음/모름: 심한 무지외반은 3단계 보정 유지
-            if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
-                return 3, 7.5, self._build_stretch_reason(inp, 3, 7.5, "정보 불확실 + 무지외반 심함: 3단계 보정")
 
             applied = self._applied_score(inp, issues)
-            if applied >= 3:
-                return 0, 0.0, "꽉낌 + 적용점수 3이상: 한 사이즈 업(+5mm) 우선"
-            if applied == 1:
-                return 1, 2.5, self._build_stretch_reason(inp, 1, 2.5, "적용점수 1점: 1단계 늘림")
-            if applied == 2:
-                return 2, 5.0, self._build_stretch_reason(inp, 2, 5.0, "적용점수 2점: 2단계 늘림")
+            effective_applied = self._effective_stretch_score(inp, applied, recommended_fit)
+            target_steps = _adjusted_steps(effective_applied)
+            if target_steps == 0:
+                if size_adjusted:
+                    return 0, 0.0, "꽉낌 + 사이즈 업으로 등가 보정 강도 충족 (추가 늘림 없음)"
+                return 0, 0.0, "꽉낌 + 적용점수 0: 추가 늘림 없음"
+            stretch_mm = target_steps * 2.5
+            reason_base = (
+                f"꽉낌 등가 환산: 적용점수 {effective_applied}점 - 사이즈 업 {size_credit}점 = {target_steps}단계"
+                if size_adjusted
+                else f"적용점수 {effective_applied}점: {target_steps}단계 늘림"
+            )
+            return target_steps, stretch_mm, self._build_stretch_reason(inp, target_steps, stretch_mm, reason_base)
 
         # 넓은볼+무지외반(경/중)은 기성화와 별개로 2단계 보완 가능
-        if "넓음" in issues and "무지외반" in issues and inp.hallux_severity in ("1", "2"):
+        if "넓음" in issues and "무지외반" in issues and _norm_severity(inp.hallux_severity) in ("1", "2"):
             return 2, 5.0, self._build_stretch_reason(inp, 2, 5.0, "기성화 보완: 2단계 넓힘 추가")
 
         # 기성화만으로 해결 가능하면 가공 없음
@@ -552,9 +659,9 @@ class DiagnosisEngine:
     ) -> list[str]:
         works = []
         if "앞코" in issues:
-            if inp.toe_detail == "1":
+            if _norm_severity(inp.toe_detail) == "1":
                 works.append("발길이 늘림")
-            elif inp.toe_detail == "3":
+            elif _norm_severity(inp.toe_detail) == "3":
                 # 꽉낌으로 +5mm 사이즈 업이 이미 적용된 경우 핀포인트 가공은 중복 제외
                 if not ("꽉" in inp.fit_experience and size_adjusted):
                     works.append("핀포인트 앞코 늘림")
@@ -562,10 +669,11 @@ class DiagnosisEngine:
                 # 요청 반영: 앞코 너비 늘림은 발볼늘림 적용 시에만 추가
                 if stretch_step > 0:
                     works.append("앞코 너비 늘림")
-        if "발등 높음" in issues and inp.instep_severity in ("1", "2"):
+        if "발등 높음" in issues and _norm_severity(inp.instep_severity) in ("1", "2"):
             works.append("발등 높이 늘림")
-        if "무지외반" in issues and inp.hallux_severity == "3":
+        if "무지외반" in issues and _norm_severity(inp.hallux_severity) == "3":
             works.append("핀포인트 무지외반 늘림")
+            works.append("앞코 너비 늘림 권고")
         return works
 
     def _build_stretch_reason(self, inp: CustomerInput, step: int, stretch_mm: float, base: str) -> str:
@@ -607,6 +715,22 @@ class DiagnosisEngine:
         total = self._policy_total_score(inp, issues)
         return max(0, total - self._fit_score(inp))
 
+    def _effective_stretch_score(
+        self, inp: CustomerInput, applied_score: int, recommended_fit: Optional[str]
+    ) -> int:
+        """
+        실제 추천 핏이 사용자 선호 핏보다 이미 넓어졌다면 발볼늘림 강도를 그만큼 낮춘다.
+
+        예: 기본핏 사용자가 `편한핏` 제품을 추천받은 경우, `기본핏 + 2단계 늘림`과
+        `편한핏 + 1단계 늘림`은 등가 후보로 본다.
+        """
+        if not recommended_fit:
+            return applied_score
+        preferred = self.FIT_SCORE.get(inp.preferred_style, 1)
+        actual = self.FIT_SCORE.get(recommended_fit, preferred)
+        fit_delta = max(0, actual - preferred)
+        return max(0, applied_score - fit_delta)
+
     def _fit_score(self, inp: CustomerInput) -> int:
         return self.FIT_SCORE.get(inp.preferred_style, 1)
 
@@ -629,8 +753,12 @@ class DiagnosisEngine:
         - Q5-3 = 3(모름) + 무지외반 심함
         """
         if inp.heel_slip_when_one_size_up is False:
+            # 기본핏 + 낮은/중간 보정 강도는 사이즈업보다 핏/발볼 보정으로 먼저 해결한다.
+            # TC09 회귀: 기본핏 + 넓음많이 + 꽉낌은 240 유지 + 보정 후보가 정상.
+            if inp.preferred_style == "기본핏" and self._q2_score(inp, issues) < 3:
+                return False
             return True
-        if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+        if inp.heel_slip_when_one_size_up is None and _norm_severity(inp.hallux_severity) == "3":
             return True
         return False
 
@@ -638,7 +766,7 @@ class DiagnosisEngine:
         """꽉낌 업사이즈 사유를 Q5-3 응답 중심으로 설명한다."""
         if inp.heel_slip_when_one_size_up is False:
             return "볼 압박(꽉낌) + 업사이즈 헐떡임 없음: 같은 핏라인 한 사이즈 업(+5mm) 추천"
-        if inp.heel_slip_when_one_size_up is None and inp.hallux_severity == "3":
+        if inp.heel_slip_when_one_size_up is None and _norm_severity(inp.hallux_severity) == "3":
             return "볼 압박(꽉낌) + 정보 불확실 + 무지외반 심함: 한 사이즈 업(+5mm) 안전 권장"
         return "볼 압박(꽉낌): 업사이즈 여부는 보수적으로 판단"
 
