@@ -209,7 +209,7 @@
 - **코드(이미 반영):** `session.py` — `foot_detail_pending` 직렬화(Q2-1 복합 세부), Q5-3 세 번째 칩 **「신어본 적 없음」** 및 파서 호환.
 - **정책:** `Q5_TIGHT_POLICY_TABLE.md` §6.1.1(핏 등가), §6.4.1(중복 질문안 **철회**); `09_ideas_backlog` 윗사이즈 항목 **철회** 반영.
 - **스모크:** `scripts/round2_chat_smoke_tc06_10.py` (TC08 마지막 입력 `신어본 적 없음`).
-- **다음 작업:** TC11~TC20 입력·기대값 채우기, 로컬 변경분 `git commit`.
+- **다음 작업:** `docs/plans/TESTSET_20_TEMPLATE.md` 표 **TC11~TC20** 행에 입력(Q2/Q2-1/Q4/Q5/…)·기대 결과·우선순위 채우기 → Round 2 후반(마일스톤 D+1/D+3) 진행.
 
 #### 2026-05-11 이후 Round 2 준비/실행 마일스톤 (하루 2시간 기준)
 
