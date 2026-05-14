@@ -731,6 +731,9 @@ class ConversationController:
             f"추천 핏은 [{res.recommended_fit}]이고, 추천 사이즈는 {res.final_size}mm예요.",
             f"발볼 늘림은 {stretch_label} 안내드려요.",
         ]
+        slip_hint = self._heel_slip_downsize_guidance(inp, res)
+        if slip_hint:
+            summary_lines.append(slip_hint)
         if res.additional_works:
             summary_lines.append(
                 "추가 가공·보정은 " + ", ".join(res.additional_works) + " 안내드려요."
@@ -778,6 +781,24 @@ class ConversationController:
             )
         lines.append("추천 상품 상세페이지를 비교해 보시고, 핏 라인 참고하셔서 구매해 주세요 ^^")
         return "\n".join(lines)
+
+    @staticmethod
+    def _heel_slip_downsize_guidance(inp, res) -> Optional[str]:
+        """
+        Q5-3(꽉낌)에서 한 치수 업 시 헐떡임 있음, 또는 헐떡임 착화에 다운/늘림이 적용된 경우
+        사이즈업 대신 다운 + 발볼 늘림 방향을 한 줄로 안내한다.
+        """
+        if getattr(inp, "heel_slip_when_one_size_up", None) is True:
+            return (
+                "한 치수 더 크게 신을 때 뒤꿈치가 헐떡이신 편이라, 사이즈를 키우기보다 "
+                "**사이즈를 한 단계 낮추고 발볼 늘림**으로 볼 폭을 맞추는 구성을 권장드려요."
+            )
+        fe = inp.fit_experience or ""
+        if "헐떡임" in fe and (res.final_size < inp.original_size or res.stretch_step > 0):
+            return (
+                "크게 신어 헐떡이셨다면 **사이즈 다운 + 발볼 늘림**으로 조정하는 방향을 안내드려요."
+            )
+        return None
 
     def _short_product_label(self, name: str, max_len: int = 28) -> str:
         if not name:
