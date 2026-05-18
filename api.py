@@ -702,11 +702,13 @@ try:
                 inbound.message,
             )
 
-        # 옵션: 네이버 보내기 API로 응답 푸시 (시나리오 고정 응답을 대체/보완)
-        # 푸시가 성공하면 웹훅 동기 응답(send)을 생략해 중복 발화를 방지한다.
-        pushed = _send_naver_push(inbound, result, session)
-        if pushed:
-            return {"ok": True, "session_id": session.session_id}
+        # 톡톡 UI는 웹훅 동기 본문(event: send)에 의존한다. {ok:true}만 반환하면 무반응처럼 보일 수 있음.
+        # 보내기 API는 NAVER_WEBHOOK_ALSO_PUSH=true 일 때만 추가 호출(기본 off, 중복·UI 미반영 방지).
+        _also_push = os.environ.get("NAVER_WEBHOOK_ALSO_PUSH", "false").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        if _NAVER_SEND_API_ENABLED and _also_push:
+            _send_naver_push(inbound, result, session)
 
         response = naver_adapter.build_outbound(result)
         response["session_id"] = session.session_id
