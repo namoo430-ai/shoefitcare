@@ -16,18 +16,20 @@ sys.path.insert(0, ROOT)
 from core.session import ConversationController, SessionStore
 
 
+# Q_ENTRY: 2=자세히(Full) → Q_FULL_ENTRY: 1=상품먼저 / 2=발정보
+# 상품먼저: design → foot → size → fit_line → fit_exp
 SCENARIOS = [
     {
         "name": "A_잘맞음",
-        "inputs": ["2", "2", "1", "240", "1", "1"],
+        "inputs": ["2", "1", "4", "2", "240", "1", "1"],
     },
     {
         "name": "B_헐떡임",
-        "inputs": ["2", "3", "1", "2", "245", "2", "2"],
+        "inputs": ["2", "2", "3", "1", "245", "2", "2"],
     },
     {
         "name": "C_꽉낌",
-        "inputs": ["2", "3,4", "2,1", "1", "245", "2", "3"],
+        "inputs": ["2", "3,4", "2,1", "4", "245", "2", "3", "아니요"],
     },
 ]
 

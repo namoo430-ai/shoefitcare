@@ -1,0 +1,10 @@
+관계번호,부모_테이블,부모_PK,자식_테이블,자식_FK,카디널리티,DB에서_강제,엔진_흐름_한줄
+1,customer_inputs,session_id,diagnosis_results,session_id,1:1,예(SQLite FK),고객 입력 저장 후 같은 session_id로 진단 결과 저장
+2,diagnosis_results,session_id,return_feedback,session_id,1:N,예(SQLite FK),한 진단에 반품 피드백 0~여러 건(보통 1건)
+3,products.csv,product_id,product_fit_specs.csv,product_id,1:N,아니오(CSV),TOP3 후보: 상품별 사이즈·핏 스펙 조인(코드 dict)
+4,products.csv,product_id,product_tags.csv,product_id,1:N,아니오(CSV),후보 상품 태그 부착
+5,products.csv,product_id,diagnosis_results,recommended_product_id,N:1,아니오,진단이 CSV 카탈로그 중 1개 product_id 추천
+6,products.csv,product_id,orders_returns_fit_feedback.csv,product_id,N:1,아니오,주문·반품 통계로 추천 penalty
+7,customer_inputs,session_id,orders_returns_fit_feedback.csv,session_id,1:N,아니오(예시),실운영 시 주문·세션 연결 설계
+8,customer_inputs,session_id,rag_docs JSON,doc_id(=session_id),1:1,아니오(파일),export_rag_document()가 케이스 문서 생성
+9,Session(대화),session_id,customer_inputs,session_id,1:0..1,아니오,챗봇 완료 시점에 DB 적재

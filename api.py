@@ -10,8 +10,9 @@
 # FastAPI 어댑터 (설치 시 활성화)
 # ──────────────────────────────────────────────
 try:
-    from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse
+    from fastapi import FastAPI, HTTPException, Header, File, UploadFile, Form
+    from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
     import sys, os
     import json
@@ -21,7 +22,8 @@ try:
     from datetime import datetime
     from collections import Counter
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    _ROOT = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, _ROOT)
 
     from core.session import ConversationController, SessionStore, SessionState
     from core.storage import init_db
@@ -29,6 +31,9 @@ try:
     from adapters.kakao import KakaoAdapter
 
     app = FastAPI(title="슈핏케어 API")
+    _IMAGES_DIR = os.path.join(_ROOT, "images")
+    if os.path.isdir(_IMAGES_DIR):
+        app.mount("/product-images", StaticFiles(directory=_IMAGES_DIR), name="product-images")
     store = SessionStore()
     ctrl  = ConversationController(store=store)
     naver_adapter = NaverAdapter()
@@ -59,6 +64,36 @@ try:
     _NAVER_SEND_API_URL = os.environ.get("NAVER_SEND_API_URL", "").strip()
     _NAVER_SEND_API_AUTH = os.environ.get("NAVER_SEND_API_AUTH", "").strip()
     _NAVER_SEND_API_TIMEOUT_SEC = float(os.environ.get("NAVER_SEND_API_TIMEOUT_SEC", "5"))
+    # 데모 UI/세션 변경 확인용 — 화면에 표시됨. 값이 안 바뀌면 서버 재시작 필요.
+    DEMO_UI_BUILD = "20260529-pilot-legacy-demo"
+    from pilot_storage import (
+        init_pilot_tables,
+        create_diagnosis,
+        complete_precision,
+        update_diagnosis,
+        register_order_no_diagnosis,
+        list_diagnoses,
+        kpi_counts,
+        return_rate_by_cohort,
+        record_funnel_event,
+        funnel_kpi,
+        upsert_photo_daily,
+        save_precision_photo,
+        resolve_precision_photo_path,
+    )
+    from pilot_ui import PILOT_HTML, ADMIN_HTML, PILOT_BUILD
+
+    init_pilot_tables()
+    _ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+
+    def _require_admin(x_admin_token: str | None = None) -> None:
+        if not _ADMIN_TOKEN:
+            raise HTTPException(status_code=503, detail="ADMIN_TOKEN not configured")
+        if (x_admin_token or "").strip() != _ADMIN_TOKEN:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    def _admin_token_from_query(token: str | None = None) -> str | None:
+        return (token or "").strip() or None
 
     _DEMO_HTML = """<!doctype html>
 <html lang="ko">
@@ -67,25 +102,24 @@ try:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>슈핏케어 추천엔진 데모</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f7f8fb; color: #222; }
-    .wrap { max-width: 720px; margin: 24px auto; background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); overflow: hidden; }
-    .head { padding: 16px 20px; background: #1f3a8a; color: #fff; }
-    .head h1 { margin: 0; font-size: 18px; }
-    .head p { margin: 6px 0 0; font-size: 13px; opacity: .95; }
-    .status-badge { margin-top: 8px; display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: 999px; background: #334155; color: #fff; }
-    .status-badge.ok { background: #16a34a; }
-    .status-badge.err { background: #b91c1c; }
+    :root { --pink: #c97b84; --pink-soft: #f3e4e6; --bg: #f2f2f7; --card: #ffffff; --text: #1c1c1e; --muted: #8e8e93; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+    .phone { max-width: 430px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; background: var(--bg); }
+    .head { padding: 14px 16px 10px; background: var(--card); border-bottom: 1px solid rgba(0,0,0,.06); }
+    .head h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    .head p { margin: 4px 0 0; font-size: 14px; color: var(--muted); line-height: 1.45; }
+    .status-badge { display: none; }
     body.foot-mode .chat .quick { display: none !important; }
-    .chat { height: 520px; overflow: auto; padding: 16px; background: #f7f8fb; }
-    .msg { max-width: 86%; margin: 10px 0; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; line-height: 1.5; }
-    .bot { background: #fff; border: 1px solid #e5e7eb; }
-    .me { margin-left: auto; background: #dbeafe; border: 1px solid #bfdbfe; }
-    .meta { font-size: 12px; color: #6b7280; margin-top: 4px; }
-    .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .quick button { border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
-    .quick button:hover { background: #eef2ff; }
-    .panel { padding: 10px 12px; border-top: 1px solid #e5e7eb; background: #fff; }
-    .panel.hidden { display: none; }
+    .chat { flex: 1; overflow: auto; padding: 12px 14px 100px; }
+    .msg { max-width: 88%; margin: 6px 0; padding: 12px 14px; border-radius: 18px; white-space: pre-wrap; line-height: 1.55; font-size: 16px; }
+    .bot { background: var(--card); border: 1px solid rgba(0,0,0,.04); border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .me { display: none; }
+    .quick { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; max-width: 88%; }
+    .quick button { border: 0; background: var(--card); color: var(--pink); border-radius: 14px; padding: 12px 14px; font-size: 16px; font-weight: 500; cursor: pointer; text-align: left; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+    .quick button:active { background: var(--pink-soft); }
+    .panel { padding: 10px 12px; border-top: 1px solid rgba(0,0,0,.06); background: var(--card); }
+    .panel.hidden { display: none !important; }
     .panel.disabled { opacity: 0.5; }
     .panel.disabled .chips button,
     .panel.disabled .actions button { cursor: not-allowed; }
@@ -98,29 +132,34 @@ try:
     .selection-preview { margin-top: 8px; font-size: 12px; color: #334155; }
     .actions { display: flex; gap: 8px; margin-top: 10px; }
     .actions button { border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
-    #complete-selection { background: #1d4ed8; color: #fff; }
-    #clear-selection { background: #64748b; color: #fff; }
-    .input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff; }
-    .input input { flex: 1; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; font-size: 14px; }
-    .input button { border: 0; background: #1f3a8a; color: #fff; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
-    .row { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px dashed #e5e7eb; font-size: 12px; color: #6b7280; }
+    #complete-selection { background: var(--pink); color: #fff; }
+    #clear-selection { background: #aeaeb2; color: #fff; }
+    .composer { display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid rgba(0,0,0,.06); }
+    .composer input { flex: 1; border: 1px solid rgba(0,0,0,.08); border-radius: 20px; padding: 10px 14px; font-size: 16px; background: var(--bg); }
+    .composer button { border: 0; background: var(--pink); color: #fff; border-radius: 20px; padding: 10px 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    #reset { background: transparent; color: var(--muted); font-weight: 500; }
+    .cta-bar { display: none; position: fixed; left: 0; right: 0; bottom: 0; max-width: 430px; margin: 0 auto; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); background: rgba(255,255,255,.92); backdrop-filter: blur(12px); border-top: 1px solid rgba(0,0,0,.06); z-index: 20; }
+    .cta-bar.show { display: block; }
+    .cta-bar button { width: 100%; border: 0; background: var(--pink); color: #fff; font-size: 16px; font-weight: 600; padding: 14px; border-radius: 14px; margin-top: 6px; }
+    .cta-bar button.secondary { background: #fff; color: var(--pink); border: 1px solid var(--pink); }
+    .cta-bar button.copy { background: #4a5568; }
+    .cta-trust { text-align: center; font-size: 13px; color: var(--muted); margin: 0 0 8px; line-height: 1.4; }
+    .row { display: none; }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="phone">
     <div class="head">
-      <h1>슈핏케어 추천엔진 데모</h1>
-      <p>/chat API를 사용해 추천 흐름을 바로 시연합니다.</p>
-      <span id="ui-status" class="status-badge">UI 초기화 중</span>
+      <h1>슈핏케어</h1>
+      <p id="head-greet">내 발에 맞는 편한 신발, 간단하게 찾아보세요.</p>
+      <p style="font-size:11px;color:#c97b84;margin:4px 0 0">빌드 __DEMO_BUILD__</p>
+      <span id="ui-status" class="status-badge">UI</span>
     </div>
     <div class="row">session_id: <span id="sid">없음</span></div>
     <div id="chat" class="chat"></div>
-    <div id="quick-start-panel" class="panel">
+    <div id="quick-start-panel" class="panel hidden">
       <div class="label">빠른 시작</div>
-      <div class="chips">
-        <button type="button" data-role="quick-start" data-msg="1">상품 먼저 추천받기 (1)</button>
-        <button type="button" data-role="quick-start" data-msg="2">발 정보 입력 후 추천받기 (2)</button>
-      </div>
+      <div class="chips"></div>
     </div>
     <div id="symptom-panel" class="panel disabled">
       <div class="label">증상 선택 (복수 선택)</div>
@@ -158,10 +197,15 @@ try:
         <button type="button" id="clear-selection">전체 초기화</button>
       </div>
     </div>
-    <div class="input">
-      <input id="msg" placeholder="메시지를 입력하세요 (예: 1, 구두, 넓음)" />
+    <div class="composer">
+      <input id="msg" placeholder="숫자·사이즈 입력" />
       <button id="send">보내기</button>
-      <button id="reset" style="background:#475569;">새 세션</button>
+      <button id="reset">새로</button>
+    </div>
+    <div id="cta-bar" class="cta-bar">
+      <p class="cta-trust">진단 상품으로 주문하시거나, 다른 상품을 둘러보실 수 있어요</p>
+      <button type="button" id="cta-buy">진단 상품 바로가기</button>
+      <button type="button" id="cta-browse-other" class="secondary">다른 상품 보러가기</button>
     </div>
   </div>
   <script>
@@ -178,7 +222,15 @@ try:
     let sessionId = null;
     let symptomPanelEnabled = false;
     let bootPromise = null;
-    const basePayload = { channel: "web", customer_id: "demo_user", shop_id: "default_shop", policy_version: "v1" };
+    const urlParams = new URLSearchParams(window.location.search);
+    const basePayload = {
+      channel: "web",
+      customer_id: "demo_user",
+      shop_id: "default_shop",
+      policy_version: "v1",
+      product_id: urlParams.get("product_id") || null,
+      traffic_src: urlParams.get("src") || "html_detail",
+    };
     const symptomOrder = ["narrow", "normal", "wide", "hallux", "instep", "chubby", "toe"];
     const detailOrder = ["wide", "hallux", "instep", "toe"];
     const symptomMap = {
@@ -192,6 +244,10 @@ try:
     };
     const selectedSymptoms = new Set();
     const selectedDetails = {};
+
+    function clearChatView() {
+      chat.innerHTML = "";
+    }
 
     function add(text, who, extra) {
       const div = document.createElement("div");
@@ -231,22 +287,44 @@ try:
     }
 
     function updateGuidedPanels(state) {
-      const showQuickStart = state === "Q_ENTRY" || state === "START";
-      quickStartPanel.classList.toggle("hidden", !showQuickStart);
+      quickStartPanel.classList.add("hidden");
       const showSymptom = state === "Q_FOOT" || state === "Q_FOOT_DETAIL";
       symptomPanel.classList.toggle("hidden", !showSymptom);
       setSymptomPanelEnabled(showSymptom);
     }
 
-    async function sendMessage(text) {
+    const ctaBar = document.getElementById("cta-bar");
+    let lastCheckout = null;
+    let lastInquiryCopy = "";
+    let chatBusy = false;
+
+    async function postCtaEvent(eventName) {
+      if (!sessionId) return;
+      try {
+        await fetch("/ops/cta-event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: sessionId,
+            event: eventName,
+            shop_id: basePayload.shop_id,
+            policy_version: basePayload.policy_version,
+          }),
+        });
+      } catch (e) { /* ignore */ }
+    }
+
+    async function sendMessage(text, opts) {
       const t = (text || "").trim();
       if (!t) return;
       if (bootPromise) await bootPromise;
-      add(t, "me");
-      await callChat(t);
+      await callChat(t, opts);
     }
 
-    async function callChat(userText) {
+    async function callChat(userText, opts) {
+      if (chatBusy) return null;
+      chatBusy = true;
+      chat.querySelectorAll(".quick button").forEach((b) => { b.disabled = true; });
       const payload = { ...basePayload, session_id: sessionId, message: userText };
       let data;
       try {
@@ -254,16 +332,23 @@ try:
         data = await res.json();
       } catch (e) {
         setUiStatus("err", "UI 오류: API 호출 실패");
+        chatBusy = false;
         throw e;
+      } finally {
+        chatBusy = false;
       }
       sessionId = data.session_id || sessionId;
       sidEl.textContent = sessionId || "없음";
       updateInputPlaceholder(data.state);
       updateGuidedPanels(data.state);
+      clearChatView();
       if (["Q_FOOT", "Q_FOOT_DETAIL"].includes(data.state)) {
         chat.querySelectorAll(".quick").forEach((el) => el.remove());
       }
       add(data.text || "(응답 없음)", "bot");
+      if (data.checkout_payload) lastCheckout = data.checkout_payload;
+      lastInquiryCopy = data.inquiry_copy_text || (lastCheckout && lastCheckout.inquiry_copy_text) || "";
+      ctaBar.classList.toggle("show", Boolean(data.show_cta));
       const useInlineQuickReplies = !["Q_FOOT", "Q_FOOT_DETAIL"].includes(data.state);
       if (useInlineQuickReplies && Array.isArray(data.quick_replies) && data.quick_replies.length) {
         const q = document.createElement("div");
@@ -271,10 +356,7 @@ try:
         data.quick_replies.forEach((x) => {
           const b = document.createElement("button");
           b.textContent = x;
-          b.onclick = () => {
-            add(x, "me");
-            callChat(x);
-          };
+          b.onclick = () => { if (!chatBusy) sendMessage(x, { echo: false }); };
           q.appendChild(b);
         });
         chat.appendChild(q);
@@ -333,9 +415,20 @@ try:
       return vals.join(",");
     }
 
-    document.querySelectorAll('[data-role="quick-start"]').forEach((b) => {
-      b.onclick = async () => { await sendMessage(b.dataset.msg || ""); };
-    });
+    document.getElementById("cta-buy").onclick = async () => {
+      await postCtaEvent("cta_buy_diagnosed");
+      const url = (lastCheckout && lastCheckout.product_url) ? String(lastCheckout.product_url).trim() : "";
+      if (url) {
+        window.open(url, "_blank", "noopener");
+        return;
+      }
+      alert("상품 링크를 불러오지 못했습니다. CSV product_url을 확인해 주세요.");
+    };
+    document.getElementById("cta-browse-other").onclick = async () => {
+      await postCtaEvent("cta_browse_other");
+      const url = (lastCheckout && lastCheckout.browse_url) ? String(lastCheckout.browse_url).trim() : "";
+      if (url) window.open(url, "_blank", "noopener");
+    };
     symptomChips.querySelectorAll("button").forEach((b) => {
       b.onclick = () => {
         if (!symptomPanelEnabled) return;
@@ -376,14 +469,10 @@ try:
       if (!symptomPanelEnabled) return;
       const baseMessage = composeBaseMessage();
       if (!baseMessage) return;
-      add(baseMessage, "me");
-      const response = await callChat(baseMessage);
+      const response = await callChat(baseMessage, { echo: false });
       if (response && response.state === "Q_FOOT_DETAIL") {
         const detailMessage = composeDetailMessage();
-        if (detailMessage) {
-          add(detailMessage, "me");
-          await callChat(detailMessage);
-        }
+        if (detailMessage) await callChat(detailMessage, { echo: false });
       }
     };
     document.getElementById("clear-selection").onclick = () => {
@@ -403,7 +492,8 @@ try:
       sidEl.textContent = "없음";
       chat.innerHTML = "";
       clearSelectionUI();
-      bootPromise = callChat("시작");
+      ctaBar.classList.remove("show");
+      bootPromise = callChat("", { echo: false });
       await bootPromise;
       bootPromise = null;
     };
@@ -412,7 +502,16 @@ try:
     updateGuidedPanels("Q_ENTRY");
     updateInputPlaceholder("Q_ENTRY");
     setUiStatus("ok", "UI 로드 완료");
-    bootPromise = callChat("시작");
+    bootPromise = (async () => {
+      const mode = (urlParams.get("mode") || "").toLowerCase();
+      if (mode === "lite") {
+        await callChat("간단하게 추천받기", { echo: false });
+      } else if (mode === "full") {
+        await callChat("내 발에 맞게 자세히 진단하기", { echo: false });
+      } else {
+        await callChat("", { echo: false });
+      }
+    })();
     bootPromise.finally(() => { bootPromise = null; });
   </script>
 </body>
@@ -604,11 +703,238 @@ try:
         customer_id: str | None = None
         shop_id: str = "default_shop"
         policy_version: str = "v1"
+        product_id: str | None = None
+        traffic_src: str | None = None
+
+    class CtaEventRequest(BaseModel):
+        session_id: str
+        event: str
+        shop_id: str = "default_shop"
+        policy_version: str = "v1"
+
+    @app.get("/")
+    def root():
+        return RedirectResponse(url="/pilot", status_code=302)
+
+    @app.get("/health/build")
+    def health_build():
+        from pilot_engine import PILOT_RULE_VERSION
+
+        return {
+            "demo_ui_build": DEMO_UI_BUILD,
+            "pilot_build": PILOT_BUILD,
+            "pilot_rule_version": PILOT_RULE_VERSION,
+            "pilot_4_questions": True,
+            "pilot_5_questions": False,
+            "lite_2_questions": False,
+            "demo_clear_each_step": True,
+            "full_without_comfort_block": True,
+            "coupang_inquiry_cta": True,
+            "admin_dashboard": True,
+            "pilot_precision_photo_upload": True,
+            "product_detail_html": True,
+        }
+
+    @app.get("/pilot", response_class=HTMLResponse)
+    def pilot_page():
+        html = PILOT_HTML.replace("__PILOT_BUILD__", PILOT_BUILD)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page():
+        return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+    class PilotDiagnoseRequest(BaseModel):
+        q1: str
+        q2: list[str] = []
+        q3: str = ""
+        q4: int = 235
+        q5: str = ""
+        product_id: str | None = None
+        channel: str = "web"
+
+    @app.post("/pilot/diagnose")
+    def pilot_diagnose(req: PilotDiagnoseRequest):
+        if req.q4 not in range(225, 256, 5):
+            return {"error": "Q4 사이즈는 225~255 (5mm) 만 허용됩니다."}
+        return create_diagnosis(
+            req.model_dump(),
+            channel=req.channel,
+            product_id=req.product_id,
+        )
+
+    class PilotPrecisionRequest(BaseModel):
+        diagnosis_id: str
+        left_length_cm: float
+        right_length_cm: float
+        left_width_cm: float
+        right_width_cm: float
+        contact: str
+        consent: bool = False
+
+    @app.post("/pilot/precision")
+    def pilot_precision(req: PilotPrecisionRequest):
+        try:
+            return complete_precision(
+                req.diagnosis_id,
+                left_length_cm=req.left_length_cm,
+                right_length_cm=req.right_length_cm,
+                left_width_cm=req.left_width_cm,
+                right_width_cm=req.right_width_cm,
+                contact=req.contact,
+                consent=req.consent,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+    @app.post("/pilot/precision-photo")
+    async def pilot_precision_photo(
+        diagnosis_id: str = Form(...),
+        photo: UploadFile = File(...),
+    ):
+        try:
+            raw = await photo.read()
+            result = save_precision_photo(
+                diagnosis_id.strip(),
+                content=raw,
+                content_type=photo.content_type or "",
+            )
+            record_funnel_event(
+                "precision_photo_uploaded",
+                channel="pilot",
+                diagnosis_id=diagnosis_id.strip(),
+            )
+            return result
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+    class PilotFunnelEventRequest(BaseModel):
+        event: str
+        product_id: str | None = None
+        channel: str = "html_detail"
+        diagnosis_id: str | None = None
+
+    @app.post("/pilot/event")
+    def pilot_funnel_event(req: PilotFunnelEventRequest):
+        try:
+            record_funnel_event(
+                req.event.strip(),
+                product_id=req.product_id,
+                channel=req.channel,
+                diagnosis_id=req.diagnosis_id,
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True}
+
+    class AdminPhotoDailyRequest(BaseModel):
+        log_date: str
+        photo_count: int
+        memo: str = ""
+
+    @app.put("/api/admin/photo-daily")
+    def api_admin_photo_daily(
+        body: AdminPhotoDailyRequest,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        try:
+            upsert_photo_daily(body.log_date, body.photo_count, body.memo)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, "funnel": funnel_kpi()}
+
+    @app.get("/api/admin/diagnoses/{diagnosis_id}/photo")
+    def api_admin_diagnosis_photo(
+        diagnosis_id: str,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        tok = (x_admin_token or "").strip() or _admin_token_from_query(token)
+        _require_admin(tok)
+        path = resolve_precision_photo_path(diagnosis_id)
+        if not path:
+            raise HTTPException(status_code=404, detail="photo not found")
+        return FileResponse(path)
+
+    @app.get("/api/admin/kpi")
+    def api_admin_kpi(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
+        _require_admin(x_admin_token)
+        return {
+            "counts": kpi_counts(),
+            "cohort": return_rate_by_cohort(),
+            "funnel": funnel_kpi(),
+        }
+
+    @app.get("/api/admin/diagnoses")
+    def api_admin_diagnoses(
+        q: str = "",
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        return {"items": list_diagnoses(q=q)}
+
+    class AdminDiagnosisPatch(BaseModel):
+        order_no: str | None = None
+        return_status: int | None = None
+        return_reason: str | None = None
+        actual_work_step: int | None = None
+        memo: str | None = None
+
+    @app.patch("/api/admin/diagnoses/{diagnosis_id}")
+    def api_admin_patch(
+        diagnosis_id: str,
+        body: AdminDiagnosisPatch,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        fields = {k: v for k, v in body.model_dump().items() if v is not None}
+        update_diagnosis(diagnosis_id, fields)
+        return {"ok": True}
+
+    class AdminOrderNoDx(BaseModel):
+        order_no: str
+        return_status: int = 0
+        return_reason: str = ""
+        product_id: str | None = None
+
+    @app.post("/api/admin/orders/no-diagnosis")
+    def api_admin_order_no_dx(
+        body: AdminOrderNoDx,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        oid = register_order_no_diagnosis(
+            body.order_no,
+            product_id=body.product_id,
+            return_status=body.return_status,
+            return_reason=body.return_reason,
+        )
+        return {"ok": True, "id": oid}
+
+    @app.get("/product-detail", response_class=HTMLResponse)
+    def product_detail_page(product_id: str | None = None):
+        """쿠팡 연동용 자사 HTML 상세 — 간단/정밀 진단 링크."""
+        path = os.path.join(_ROOT, "docs", "demo", "product_detail.html")
+        if not os.path.isfile(path):
+            return HTMLResponse("<h1>product_detail.html not found</h1>", status_code=404)
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        pid = (product_id or "").strip()
+        html = html.replace("__PRODUCT_ID__", pid or "13352256777")
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     @app.get("/demo", response_class=HTMLResponse)
     def demo_page():
         """추천엔진 시연용 간단 프론트."""
-        return HTMLResponse(content=_DEMO_HTML)
+        html = _DEMO_HTML.replace("__DEMO_BUILD__", DEMO_UI_BUILD)
+        return HTMLResponse(
+            content=html,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.post("/chat")
     def chat(req: MessageRequest):
@@ -626,13 +952,25 @@ try:
             session = ctrl.new_session(channel=req.channel, customer_id=req.customer_id)
             session.shop_id = req.shop_id
             session.policy_version = req.policy_version
-            # 신규 세션 → 첫 안내 반환
-            intro = ctrl.get_initial_prompt()
-            store.save(session)
+            if req.product_id:
+                session.pinned_product_id = str(req.product_id).strip()
+            if req.traffic_src:
+                session.traffic_src = str(req.traffic_src).strip()
             _audit_event("chat_start", session.session_id, session.channel, session.shop_id, session.policy_version, req.message)
+            msg = (req.message or "").strip()
+            if msg:
+                result = _safe_handle_message(session, msg)
+                store.save(session)
+                return {"session_id": session.session_id, **result}
+            intro = ctrl.get_initial_prompt(session)
+            store.save(session)
             return {"session_id": session.session_id, **intro}
         session.shop_id = req.shop_id
         session.policy_version = req.policy_version
+        if req.product_id:
+            session.pinned_product_id = str(req.product_id).strip()
+        if req.traffic_src:
+            session.traffic_src = str(req.traffic_src).strip()
 
         # 메시지 처리
         result = _safe_handle_message(session, req.message)
@@ -753,7 +1091,35 @@ try:
     def report(shop_id: str | None = None, policy_version: str | None = None):
         """반품율 리포트"""
         from core.storage import get_return_rate_report
-        return get_return_rate_report(shop_id=shop_id, policy_version=policy_version)
+        from hybrid_recommender import HybridProductRecommender
+
+        payload = get_return_rate_report(shop_id=shop_id, policy_version=policy_version)
+        payload["scoring_policy"] = HybridProductRecommender().score_policy_snapshot(policy_version)
+        return payload
+
+    @app.post("/ops/cta-event")
+    def cta_event(req: CtaEventRequest):
+        """데모 CTA: 구매 의도 / 이탈 / 문의 복사 (민감 원문 없음)."""
+        allowed = {"cta_buy_diagnosed", "cta_browse_other", "cta_copy_inquiry"}
+        if req.event not in allowed:
+            return {"ok": False, "error": "invalid event"}
+        _audit_event(
+            req.event,
+            req.session_id,
+            "web",
+            req.shop_id,
+            req.policy_version,
+            "",
+        )
+        return {"ok": True, "event": req.event}
+
+    @app.post("/ops/rag-sync-products")
+    def rag_sync_products():
+        """상품 CSV -> RAG 상품 문서 동기화"""
+        from rag_product_sync import sync_product_rag_docs
+
+        result = sync_product_rag_docs()
+        return {"ok": True, "result": result}
 
     @app.get("/ops/naver-events-summary")
     def naver_events_summary(shop_id: str | None = None, policy_version: str | None = None, limit: int = 5000):

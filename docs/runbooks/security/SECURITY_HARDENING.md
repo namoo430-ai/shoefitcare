@@ -24,6 +24,26 @@
 - 로그/세션/실험데이터는 보관 기한 설정 후 자동 삭제
 - 발표/테스트용 데이터는 발표 종료 후 즉시 정리
 
+#### 운영 기준(권장)
+- 운영 DB(`customer_inputs`, `diagnosis_results`, `return_feedback`) 보관: 기본 365일
+- 학습 RAG 문서(`data/rag_docs/*.json`) 보관: 기본 730일
+- 환경변수로 조정 가능:
+  - `SHOEFITCARE_RETENTION_DAYS_OPS`
+  - `SHOEFITCARE_RETENTION_DAYS_LEARNING`
+
+#### 실행 명령
+- 보존기간 기반 일괄 파기:
+  - `python scripts/data_retention_admin.py purge`
+- 보존기간 커스텀 파기:
+  - `python scripts/data_retention_admin.py purge --ops-days 365 --learning-days 730`
+- 고객 삭제 요청(세션 단위):
+  - `python scripts/data_retention_admin.py delete-session --session-id <SESSION_ID>`
+
+#### 삭제 요청 처리 범위
+- DB 삭제: `customer_inputs`, `diagnosis_results`, `return_feedback`
+- 파일 삭제: `data/rag_docs/<session_id>.json`
+- 처리 결과(JSON)를 운영 로그/티켓에 첨부해 감사 추적성을 유지
+
 ### 6) 사고 대응(간단 SOP)
 1. 외부 노출 의심 즉시 키 폐기 및 회전
 2. 공개 저장소/링크 차단 및 접근권한 축소

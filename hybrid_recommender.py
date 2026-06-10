@@ -30,6 +30,8 @@ class Candidate:
     tags: list[str]
     review_count: int
     rating: float
+    inventory_qty: int | None = None
+    margin_rate: float | None = None
     score_fit: int = 0
     score_size: int = 0
     score_symptom: int = 0
@@ -37,6 +39,9 @@ class Candidate:
     score_popularity: int = 0
     penalty_risk: int = 0
     total_score: int = 0
+    business_inventory_adjustment: int = 0
+    business_margin_adjustment: int = 0
+    business_priority: int = 0
     reason: str = ""
 
 
@@ -82,6 +87,12 @@ class HybridProductRecommender:
         self.w_pop_rating_high = self._env_int("HYBRID_RECO_WEIGHT_POP_RATING_HIGH", 8)
         self.w_pop_rating_mid = self._env_int("HYBRID_RECO_WEIGHT_POP_RATING_MID", 5)
         self.penalty_return_high = self._env_int("HYBRID_RECO_PENALTY_RETURN_HIGH", 30)
+        # Core 점수와 분리된 비즈니스 보정(기본 0). 점수식(total_score)에는 더하지 않고 tie-break에만 사용한다.
+        self.biz_inventory_low_stock_threshold = self._env_int("HYBRID_RECO_BIZ_LOW_STOCK_THRESHOLD", 3)
+        self.biz_inventory_penalty = self._env_int("HYBRID_RECO_BIZ_INVENTORY_PENALTY", 10)
+        self.biz_margin_high_threshold = self._env_float("HYBRID_RECO_BIZ_MARGIN_HIGH_THRESHOLD", 0.45)
+        self.biz_margin_boost = self._env_int("HYBRID_RECO_BIZ_MARGIN_BOOST", 5)
+        self.scoring_policy_version = os.environ.get("HYBRID_RECO_SCORING_POLICY_VERSION", "v1").strip() or "v1"
 
     def recommend_top3(self, inp, res) -> list[dict]:
         candidates = self._build_candidates(inp, res)
@@ -130,6 +141,13 @@ class HybridProductRecommender:
                         "popularity": c.score_popularity,
                         "risk_penalty": c.penalty_risk,
                     },
+                    "business_adjustment": {
+                        "inventory_adjustment": c.business_inventory_adjustment,
+                        "margin_adjustment": c.business_margin_adjustment,
+                        "priority_tiebreak": c.business_priority,
+                        "applied_to_total_score": False,
+                    },
+                    "scoring_policy": self.score_policy_snapshot(getattr(inp, "policy_version", None)),
                     "reason": c.reason,
                 }
             )
@@ -209,6 +227,8 @@ class HybridProductRecommender:
                     tags=tags_map.get(pid, []),
                     review_count=int(self._to_int(prod.get("review_count"), 0)),
                     rating=float(self._to_float(prod.get("rating"), 0.0)),
+                    inventory_qty=self._to_int(prod.get("stock_qty"), None),
+                    margin_rate=self._to_float(prod.get("margin_rate"), None),
                     penalty_risk=penalty,
                 )
             )
@@ -328,8 +348,58 @@ class HybridProductRecommender:
                 + r.score_popularity
                 - r.penalty_risk
             )
-        rows.sort(key=lambda x: x.total_score, reverse=True)
+            r.business_inventory_adjustment = self._inventory_adjustment(r.inventory_qty)
+            r.business_margin_adjustment = self._margin_adjustment(r.margin_rate)
+            r.business_priority = r.business_inventory_adjustment + r.business_margin_adjustment
+        rows.sort(key=lambda x: (x.total_score, x.business_priority, x.rating), reverse=True)
         return rows
+
+    def score_policy_snapshot(self, policy_version: str | None = None) -> dict:
+        return {
+            "policy_version": policy_version or "unknown",
+            "scoring_policy_version": self.scoring_policy_version,
+            "formula": "fit + size + symptom + workability + popularity - risk_penalty",
+            "weights": {
+                "fit_exact": self.w_fit_exact,
+                "fit_near": self.w_fit_near,
+                "size_exact": self.w_size_exact,
+                "size_near": self.w_size_near,
+                "symptom_wide": self.w_symptom_wide,
+                "symptom_hallux": self.w_symptom_hallux,
+                "symptom_toe": self.w_symptom_toe,
+                "symptom_instep": self.w_symptom_instep,
+                "design_match": self.w_design_match,
+                "work_stretch": self.w_work_stretch_friendly,
+                "work_no_stretch": self.w_work_no_stretch,
+                "pop_review_high": self.w_pop_review_high,
+                "pop_review_mid": self.w_pop_review_mid,
+                "pop_rating_high": self.w_pop_rating_high,
+                "pop_rating_mid": self.w_pop_rating_mid,
+                "penalty_return_high": self.penalty_return_high,
+            },
+            "business_rules": {
+                "included_in_total_score": False,
+                "used_for_tiebreak_only": True,
+                "inventory_low_stock_threshold": self.biz_inventory_low_stock_threshold,
+                "inventory_penalty": self.biz_inventory_penalty,
+                "margin_high_threshold": self.biz_margin_high_threshold,
+                "margin_boost": self.biz_margin_boost,
+            },
+        }
+
+    def _inventory_adjustment(self, inventory_qty: int | None) -> int:
+        if inventory_qty is None:
+            return 0
+        if inventory_qty <= self.biz_inventory_low_stock_threshold:
+            return -self.biz_inventory_penalty
+        return 0
+
+    def _margin_adjustment(self, margin_rate: float | None) -> int:
+        if margin_rate is None:
+            return 0
+        if margin_rate >= self.biz_margin_high_threshold:
+            return self.biz_margin_boost
+        return 0
 
     def _attach_explanations(self, rows: list[Candidate], inp, res) -> None:
         # 기본 템플릿 설명
@@ -482,5 +552,14 @@ class HybridProductRecommender:
             return default
         try:
             return int(str(raw).strip())
+        except Exception:
+            return default
+
+    def _env_float(self, key: str, default: float) -> float:
+        raw = os.environ.get(key, "")
+        if raw is None or str(raw).strip() == "":
+            return default
+        try:
+            return float(str(raw).strip())
         except Exception:
             return default

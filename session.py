@@ -7,11 +7,9 @@
   - 중단된 대화 재개 지원
 
 상태 흐름:
-  Q_ENTRY → (1) 상품 선행: Q_DESIGN → Q_FOOT → Q_FOOT_DETAIL(선택) → Q_SIZE …
-         → (2) 기존: Q_MEAS → Q_MEAS_INPUT(발볼) → Q_MEAS_LENGTH(발길이) → Q_FOOT → Q_FOOT_DETAIL(선택) → Q_DESIGN
-        → Q_SIZE → Q_SIZE_FIT → Q_FIT_EXP
-        → (꽉낌=3) Q_TIGHT_HEEL_ON_UP
-        → DIAGNOSING → RESULT → DONE
+  Q_ENTRY → (A) Lite: Q_LITE_1 → Q_LITE_2 → LITE_DONE → (선택) Full 이어하기
+         → (B) Full: Q_FULL_ENTRY → (1) 상품 선행 … / (2) 실측 우선 …
+         → Q_SIZE → Q_FIT_EXP → (꽉낌) Q_TIGHT_HEEL_ON_UP → DIAGNOSING → RESULT → DONE
 """
 
 from __future__ import annotations
@@ -23,6 +21,8 @@ import uuid
 import json
 import re
 from llm_hybrid import HybridLLMAssistant
+import lite_diagnosis as lite
+import comfort_result_copy as comfort
 
 
 # ──────────────────────────────────────────────
@@ -30,7 +30,11 @@ from llm_hybrid import HybridLLMAssistant
 # ──────────────────────────────────────────────
 class SessionState(str, Enum):
     START         = "START"
-    Q_ENTRY       = "Q_ENTRY"         # 진입: 상품 선행 vs 실측 우선
+    Q_ENTRY       = "Q_ENTRY"         # 진입: Lite 3문 vs Full 맞춤 추천
+    Q_LITE_1      = "Q_LITE_1"
+    Q_LITE_2      = "Q_LITE_2"
+    LITE_DONE     = "LITE_DONE"
+    Q_FULL_ENTRY  = "Q_FULL_ENTRY"    # Full: 상품 선행 vs 실측 우선
     Q_MEAS        = "Q_MEAS"          # Q0: 발길이·발볼 실측 가능 여부 (1차 분기)
     Q_MEAS_INPUT  = "Q_MEAS_INPUT"    # Q0-1: 발볼 너비(mm) 입력
     Q_MEAS_LENGTH = "Q_MEAS_LENGTH"   # Q0-2: 발길이(mm) 입력
@@ -78,6 +82,10 @@ class ChatSession:
 
     # 진입: True = 디자인(Q4) 먼저 → 발(Q2) → 사이즈(Q5)…
     product_first: bool = False
+    intake_mode: Optional[str] = None       # "lite" | "full"
+    lite_answers: Optional[dict] = None     # {"q1","q2","q3"} keys
+    pinned_product_id: Optional[str] = None   # 쿠팡/HTML 상세 유입 SKU
+    traffic_src: Optional[str] = None         # html_detail | coupang_pdp | post_card 등
 
     # Q2-1: 세부 증상 질문 순서 (예: ["3","4"]). 저장소 직렬화 필수 — 미저장 시 /chat 재로드마다 상실됨.
     foot_detail_pending: Optional[list[str]] = None
@@ -141,6 +149,10 @@ class ChatSession:
             "foot_ball_width_mm": self.foot_ball_width_mm,
             "instep_circumference_mm": self.instep_circumference_mm,
             "product_first": self.product_first,
+            "intake_mode": self.intake_mode,
+            "lite_answers": self.lite_answers,
+            "pinned_product_id": self.pinned_product_id,
+            "traffic_src": self.traffic_src,
             "foot_detail_pending": self.foot_detail_pending,
             "conversation_history": self.conversation_history,
             "diagnosis_result": self.diagnosis_result,
@@ -181,6 +193,11 @@ class ChatSession:
         sess.foot_ball_width_mm = d.get("foot_ball_width_mm")
         sess.instep_circumference_mm = d.get("instep_circumference_mm")
         sess.product_first = d.get("product_first", False)
+        sess.intake_mode = d.get("intake_mode")
+        _la = d.get("lite_answers")
+        sess.lite_answers = _la if isinstance(_la, dict) else None
+        sess.pinned_product_id = d.get("pinned_product_id")
+        sess.traffic_src = d.get("traffic_src")
         _fdp = d.get("foot_detail_pending")
         sess.foot_detail_pending = _fdp if isinstance(_fdp, list) else None
         sess.conversation_history = d.get("conversation_history", [])
@@ -259,6 +276,7 @@ class ConversationController:
     DESIGN_MAP = {"1": "구두", "2": "로퍼", "3": "단화", "4": "운동화"}
     EXP_MAP    = {"1": "잘 맞음", "2": "볼 때문에 크게 사서 헐떡임", "3": "볼이 꽉 껴서 불편함"}
     FIT_LINE_MAP = {"1": "기본핏", "2": "편한핏", "3": "아주 편한핏"}
+    MAX_RECOVERY_ERRORS = 3
 
     def __init__(self, store: Optional[SessionStore] = None):
         self._store = store or SessionStore()
@@ -279,6 +297,9 @@ class ConversationController:
 
         try:
             result = self._process(session, user_text.strip())
+            # 정상 처리 성공 시 연속 오류 카운트를 초기화한다.
+            session.error_count = 0
+            session.last_error = ""
         except Exception as e:
             session.error_count += 1
             session.last_error = str(e)
@@ -289,6 +310,16 @@ class ConversationController:
         return result
 
     def _build_hybrid_recovery(self, session: ChatSession, user_text: str, error_message: str) -> dict:
+        if session.error_count >= self.MAX_RECOVERY_ERRORS:
+            return {
+                "text": (
+                    "입력을 여러 번 이해하지 못했어요.\n"
+                    "처음부터 다시 시작하시거나, 상담 연결로 도와드릴게요."
+                ),
+                "quick_replies": ["처음으로", "상담 연결"],
+                "state": session.state.value,
+                "done": False,
+            }
         quick_replies = self._quick_replies_for_state(session)
         llm_text = self._llm.reply(
             user_message=user_text,
@@ -312,7 +343,15 @@ class ConversationController:
 
     def _quick_replies_for_state(self, session: ChatSession) -> list[str]:
         if session.state == SessionState.Q_ENTRY:
+            return [comfort.ENTRY_BUTTON_LITE, comfort.ENTRY_BUTTON_FULL]
+        if session.state == SessionState.Q_FULL_ENTRY:
             return ["상품 먼저 추천받기", "발 정보 입력 후 추천받기"]
+        if session.state == SessionState.Q_LITE_1:
+            return [label for label, _ in lite.Q1_OPTIONS.values()]
+        if session.state == SessionState.Q_LITE_2:
+            return lite.prompt_q2()["quick_replies"]
+        if session.state == SessionState.LITE_DONE:
+            return [comfort.LITE_CONTINUE_FULL, "처음으로"]
         if session.state == SessionState.Q_MEAS:
             return ["네", "아니요"]
         if session.state == SessionState.Q_FOOT:
@@ -325,13 +364,44 @@ class ConversationController:
             return ["잘 맞아요", "크게 신었는데 헐떡여요", "볼이 꽉 껴서 불편해요"]
         if session.state == SessionState.Q_TIGHT_HEEL_ON_UP:
             return ["네", "아니요", "신어본 적 없음"]
+        if session.state == SessionState.AWAIT_CONSULT:
+            return ["처음으로"]
         return []
 
     def _process(self, session: ChatSession, text: str) -> dict:
         state = session.state
+        # 전역 제어: 어느 상태에서든 재시작/상담 연결 의도를 먼저 처리한다.
+        if self._is_restart_intent(text):
+            self._reset_session_for_restart(session)
+            return self.get_initial_prompt()
+        if self._is_consult_intent(text):
+            session.state = SessionState.AWAIT_CONSULT
+            session.completed_at = datetime.now().isoformat()
+            return {
+                "text": "상담 연결 요청으로 접수했어요. 담당자가 확인 후 안내드릴게요.",
+                "quick_replies": ["처음으로"],
+                "state": session.state.value,
+                "done": True,
+            }
 
-        # ── 진입: 상품 선행 vs 기존(실측 우선) ───
+        # ── 진입: Lite 3문 vs Full 맞춤 추천 ─────
         if state == SessionState.Q_ENTRY:
+            entry = self._entry_key(text)
+            if entry == "lite":
+                session.intake_mode = "lite"
+                session.lite_answers = {}
+                session.state = SessionState.Q_LITE_1
+                p = lite.prompt_q1()
+                return {**p, "state": session.state.value, "done": False}
+            if entry == "full":
+                session.intake_mode = "full"
+                session.state = SessionState.Q_FULL_ENTRY
+                return self._full_entry_prompt(session)
+            raise ValueError(
+                f"「{comfort.ENTRY_BUTTON_LITE}」 또는 「{comfort.ENTRY_BUTTON_FULL}」을 선택해 주세요."
+            )
+
+        if state == SessionState.Q_FULL_ENTRY:
             entry = self._entry_key(text)
             if entry == "1":
                 session.product_first = True
@@ -349,7 +419,79 @@ class ConversationController:
                     "state": session.state.value,
                     "done": False,
                 }
-            raise ValueError("네 또는 아니요를 선택해 주세요.")
+            raise ValueError("상품 먼저 / 발 정보 입력 중 하나를 선택해 주세요.")
+
+        if state == SessionState.Q_LITE_1:
+            key = lite.parse_q1(text)
+            session.lite_answers = session.lite_answers or {}
+            session.lite_answers["q1"] = key
+            session.state = SessionState.Q_LITE_2
+            p = lite.prompt_q2()
+            return {**p, "state": session.state.value, "done": False}
+
+        if state == SessionState.Q_LITE_2:
+            key = lite.parse_q2(text)
+            session.lite_answers["q2"] = key
+            session.state = SessionState.LITE_DONE
+            result = lite.build_result(session.lite_answers)
+            p = lite.prompt_lite_done(result)
+            src = session.traffic_src or session.channel or "web"
+            pid = session.pinned_product_id
+            pain = comfort.pain_key_from_lite_q2(str(session.lite_answers.get("q2", "")))
+            if self._is_coupang_flow(session):
+                display_body = comfort.build_coupang_lite_result_display(pain, pid)
+                lite_step, lite_mm = comfort.lite_primary_stretch(pain)
+            else:
+                display_body = result.summary_text
+                lite_step, lite_mm = 0, 0.0
+            inquiry_copy = comfort.build_coupang_inquiry_copy_text(
+                session_id=session.session_id,
+                diagnosis_body=display_body,
+                product_id=pid,
+                product_name=None,
+                intake_mode="lite",
+                traffic_src=src,
+                stretch_step=lite_step if self._is_coupang_flow(session) else 0,
+                stretch_mm=lite_mm if self._is_coupang_flow(session) else 0,
+            )
+            p["checkout_payload"] = comfort.checkout_payload_from_lite(
+                result.prefill,
+                session_id=session.session_id,
+                inquiry_copy_text=inquiry_copy,
+                traffic_src=src,
+                product_id=pid,
+            )
+            p["inquiry_copy_text"] = inquiry_copy
+            p["text"] = display_body
+            return {**p, "state": session.state.value, "done": False, "show_cta": True}
+
+        if state == SessionState.LITE_DONE:
+            t = (text or "").strip().replace(" ", "")
+            if (
+                comfort.ENTRY_BUTTON_FULL.replace(" ", "") in t
+                or "자세히진단" in t
+                or "맞춤" in (text or "")
+                or "이어하기" in (text or "")
+            ):
+                lite.apply_prefill_to_session(session)
+                session.intake_mode = "full"
+                session.lite_answers = None
+                session.state = SessionState.Q_SIZE
+                base = self._q_size_prompt(session)
+                base["text"] = (
+                    "앞에서 말씀해 주신 내용을 반영했어요.\n"
+                    "이제 사이즈(mm)만 알려주시면 맞춤 추천을 이어갈게요.\n\n"
+                    + base["text"]
+                )
+                return base
+            if t in ("처음으로", "다시", "2", "처음"):
+                session.state = SessionState.Q_ENTRY
+                session.lite_answers = None
+                session.intake_mode = None
+                return self.get_initial_prompt()
+            raise ValueError(
+                f"「{comfort.LITE_CONTINUE_FULL}」 또는 「처음으로」를 선택해 주세요."
+            )
 
         # ── Q0: 실측 가능 여부 (1차 분기) ────────
         if state == SessionState.Q_MEAS:
@@ -383,6 +525,9 @@ class ConversationController:
 
         # ── Q0-1: 발볼 너비(mm) ─────────────────
         if state == SessionState.Q_MEAS_INPUT:
+            if session.measurement_available is not True:
+                session.state = SessionState.Q_MEAS
+                raise ValueError("실측 가능 여부를 먼저 선택해 주세요. (네/아니요)")
             try:
                 fb = float(text.replace("，", ",").split(",")[0].strip())
                 assert 70 <= fb <= 130
@@ -402,6 +547,9 @@ class ConversationController:
 
         # ── Q0-2: 발길이(mm) ─────────────────────
         if state == SessionState.Q_MEAS_LENGTH:
+            if session.foot_ball_width_mm is None:
+                session.state = SessionState.Q_MEAS_INPUT
+                raise ValueError("먼저 발볼 너비(mm)를 입력해 주세요. (예: 92)")
             try:
                 fl = int(text.replace("，", ",").split(",")[0].strip())
                 assert 200 <= fl <= 280
@@ -441,6 +589,12 @@ class ConversationController:
 
         # ── Q2-1: 세부 증상 ─────────────────────
         if state == SessionState.Q_FOOT_DETAIL:
+            if not session.foot_issues:
+                session.state = SessionState.Q_FOOT
+                raise ValueError("불편 부위를 먼저 선택해 주세요.")
+            if not session.foot_detail_pending:
+                session.state = SessionState.Q_FOOT
+                raise ValueError("세부 질문 순서를 복구하지 못했습니다. 불편 부위를 다시 선택해 주세요.")
             return self._process_foot_detail(session, text)
 
         # ── Q4: 디자인 ──────────────────────────
@@ -485,6 +639,9 @@ class ConversationController:
 
         # ── Q5-0: 최근 제품 핏 ───────────────────
         if state == SessionState.Q_SIZE_FIT:
+            if session.original_size is None:
+                session.state = SessionState.Q_SIZE
+                raise ValueError("사이즈(mm)를 먼저 입력해 주세요.")
             val = self.FIT_LINE_MAP.get(self._fit_line_key(text))
             if not val:
                 raise ValueError("기본핏/편한핏/아주 편한핏 중에서 선택해 주세요.")
@@ -500,6 +657,12 @@ class ConversationController:
 
         # ── Q5-1: 착화 경험 ─────────────────────
         if state == SessionState.Q_FIT_EXP:
+            if session.original_size is None:
+                session.state = SessionState.Q_SIZE
+                raise ValueError("사이즈(mm)를 먼저 입력해 주세요.")
+            if not session.preferred_style:
+                session.state = SessionState.Q_SIZE_FIT
+                raise ValueError("최근 신는 제품의 핏(기본핏/편한핏/아주 편한핏)을 먼저 선택해 주세요.")
             fit_exp_key = self._fit_exp_key(text)
             val = self.EXP_MAP.get(fit_exp_key)
             if not val:
@@ -519,6 +682,9 @@ class ConversationController:
 
         # ── 꽉낌: 한 치수 업 시 헐떡임 (복합 보정) ─
         if state == SessionState.Q_TIGHT_HEEL_ON_UP:
+            if session.fit_experience != self.EXP_MAP.get("3"):
+                session.state = SessionState.Q_FIT_EXP
+                raise ValueError("착화감에서 '볼이 꽉 껴서 불편해요'를 먼저 선택해 주세요.")
             if self._is_yes(text):
                 session.heel_slip_when_one_size_up = True
             elif self._is_no(text):
@@ -545,13 +711,15 @@ class ConversationController:
             # 같은 채팅창에서 1/2 또는 재시작 의도를 보내면 바로 새 진단 시작
             t = (text or "").strip()
             entry = self._entry_key(t)
-            if entry in ("1", "2"):
+            if entry in ("lite", "full", "1", "2"):
                 session.state = SessionState.Q_ENTRY
-                return self._process(session, entry)
+                return self._process(session, text)
             if t.replace(" ", "") in ("처음으로", "다시", "재진단", "다시시작", "새로시작"):
                 session.state = SessionState.Q_ENTRY
                 return self.get_initial_prompt()
-            raise ValueError("다시 시작하려면 '상품 먼저 추천받기' 또는 '발 정보 입력 후 추천받기'를 선택해 주세요.")
+            raise ValueError(
+                f"다시 시작하려면 「{comfort.ENTRY_BUTTON_LITE}」 또는 「{comfort.ENTRY_BUTTON_FULL}」을 선택해 주세요."
+            )
 
         # ── 완료 상태 ────────────────────────────
         if session.is_complete():
@@ -710,52 +878,95 @@ class ConversationController:
         session.state = SessionState.AWAIT_CONSULT if res.is_consult else SessionState.RESULT
         session.completed_at = datetime.now().isoformat()
 
-        # 출력 생성
-        output_text = self._format_result(inp, res, top3)
+        # 출력 생성 (쿠팡 유입: TOP3 문구 제외, 전용 안내문)
+        if self._is_coupang_flow(session):
+            output_text = self._format_result_coupang(session, inp, res)
+        else:
+            output_text = self._format_result(inp, res, top3)
+        src = session.traffic_src or session.channel or "web"
+        pid = session.pinned_product_id or res.recommended_product_id
+        inquiry_copy = comfort.build_coupang_inquiry_copy_text(
+            session_id=session.session_id,
+            diagnosis_body=output_text,
+            product_id=pid,
+            product_name=res.recommended_product_name,
+            intake_mode=session.intake_mode or "full",
+            traffic_src=src,
+            final_size=res.final_size,
+            recommended_fit=res.recommended_fit,
+            stretch_step=res.stretch_step,
+            stretch_mm=res.stretch_mm,
+        )
+        checkout = comfort.checkout_payload_from_diagnosis(
+            inp,
+            res,
+            inquiry_copy_text=inquiry_copy,
+            traffic_src=src,
+            product_id=pid,
+        )
+        display_text = output_text
         return {
-            "text": output_text,
+            "text": display_text,
             "quick_replies": [],
             "state": session.state.value,
             "done": True,
-            "diagnosis": {**asdict(res), "top3_recommendations": top3},  # 구조화 데이터 + 추천 3개
+            "diagnosis": {**asdict(res), "top3_recommendations": top3},
+            "checkout_payload": checkout,
+            "inquiry_copy_text": inquiry_copy,
+            "show_cta": not res.is_consult,
         }
 
+    @staticmethod
+    def _is_coupang_flow(session: ChatSession) -> bool:
+        return comfort.is_coupang_flow(session.traffic_src, session.pinned_product_id)
+
+    def _format_result_coupang(self, session: ChatSession, inp, res) -> str:
+        """쿠팡: 발볼 늘림 1·2단계 안내만 (TOP3·장문 제외)."""
+        return comfort.build_coupang_full_result_display(
+            stretch_step=int(res.stretch_step or 0),
+            stretch_mm=float(res.stretch_mm or 0),
+            is_consult=bool(res.is_consult),
+            consult_reason=res.consult_reason or "",
+        )
+
     def _format_result(self, inp, res, top3: list[dict] | None = None) -> str:
+        """Full(자세히) 진단 전용 — Lite comfort 블록은 넣지 않음."""
         stretch_label = (
             f"{res.stretch_step}단계({res.stretch_mm}mm)"
             if res.stretch_step > 0
             else "없음"
         )
-        summary_lines = [
-            "진단 결과 안내드릴게요 🙂",
-            f"추천 핏은 [{res.recommended_fit}]이고, 추천 사이즈는 {res.final_size}mm예요.",
-            f"발볼 늘림은 {stretch_label} 안내드려요.",
+        lines = [
+            "맞춤 1·2단계 진단 결과입니다.",
+            f"추천 핏 [{res.recommended_fit}], 추천 사이즈 {res.final_size}mm, 발볼 늘림 {stretch_label}.",
+            f"추천 이유: {res.recommendation_reason}",
+            "",
+            self._build_mobile_friendly_summary_reason(inp, res, top3 or []),
         ]
         slip_hint = self._heel_slip_downsize_guidance(inp, res)
         if slip_hint:
-            summary_lines.append(slip_hint)
-        if res.additional_works:
-            summary_lines.append(
-                "추가 가공·보정은 " + ", ".join(res.additional_works) + " 안내드려요."
-            )
-        summary_line = "\n".join(summary_lines)
-        reason_line = f"추천 이유: {res.recommendation_reason}"
-        summary_reason = self._build_mobile_friendly_summary_reason(inp, res, top3 or [])
-
-        lines = [summary_line, "", reason_line, "", "추천 내용을 쉽게 설명드릴게요 💡", summary_reason]
+            lines += ["", slip_hint]
+        if res.ready_made_option or res.stretch_option:
+            parts = []
+            if res.ready_made_option:
+                parts.append(f"기성: {res.ready_made_option}")
+            if res.stretch_option:
+                parts.append(f"발볼 보완: {res.stretch_option}")
+            if parts:
+                lines += ["", " · ".join(parts)]
 
         if top3:
-            lines += ["", "고객님의 발볼 핏에 맞는 추천 상품 3개를 소개해드릴게요 👟"]
+            lines += ["", "추천 상품 TOP3"]
             for i, item in enumerate(top3, start=1):
                 short_name = self._short_product_label(str(item.get("name", "")).strip())
                 lines.append(
-                    f"- {i}) {short_name} ({item.get('fit')}, {item.get('size_mm')}mm)"
+                    f"{i}. {short_name} ({item.get('fit')}, {item.get('size_mm')}mm)"
                 )
 
         if res.is_consult:
             lines += ["", f"추가 상담이 필요해 보여요: {res.consult_reason}"]
         else:
-            lines += ["", "원하시면 같은 채팅창에서 바로 다시 진단해드릴게요."]
+            lines += ["", "처음으로 돌아가려면 「처음으로」를 선택해 주세요."]
         return "\n".join(lines)
 
     def _build_mobile_friendly_summary_reason(self, inp, res, top3: list[dict]) -> str:
@@ -777,7 +988,8 @@ class ConversationController:
         ]
         if res.stretch_step > 0:
             lines.append(
-                f"발볼 늘림은 {res.stretch_step}단계({res.stretch_mm}mm)까지 반영했어요. 주문 시 발볼 늘림 옵션을 함께 선택해 주세요."
+                f"발볼 늘림은 {res.stretch_step}단계({res.stretch_mm}mm)까지 반영했어요. "
+                "쿠팡에서는 옵션 선택이 어려우니, 문의용 복사 내용을 판매자 문의에 붙여 넣어 주세요."
             )
         lines.append("추천 상품 상세페이지를 비교해 보시고, 핏 라인 참고하셔서 구매해 주세요 ^^")
         return "\n".join(lines)
@@ -893,11 +1105,35 @@ class ConversationController:
 
     def _entry_key(self, text: str) -> str:
         t = (text or "").strip().replace(" ", "")
+        if t in (
+            "1",
+            "간단하게추천받기",
+            "간단추천",
+            "3초발볼진단받기",
+            "lite",
+        ) or "간단하게" in (text or ""):
+            return "lite"
+        if t in ("2", "내발에맞게자세히진단하기", "자세히진단", "full") or (
+            "자세히" in (text or "") and "진단" in (text or "")
+        ):
+            return "full"
         if t in ("1", "상품먼저추천받기", "상품부터고를게요", "상품부터", "상품선택", "스타일부터"):
             return "1"
-        if t in ("2", "발정보입력후추천받기", "발정보부터알려드릴게요", "발정보부터", "발정보", "정보부터"):
+        if t in ("2", "발정보부터알려드릴게요", "발정보부터", "발정보", "정보부터"):
             return "2"
         return text
+
+    def _full_entry_prompt(self, session: ChatSession) -> dict:
+        return {
+            "text": (
+                "자세히 진단을 시작할게요.\n"
+                "어디서부터 진행할까요?\n"
+                "상품 먼저 추천받기 / 발 정보 입력 후 추천받기"
+            ),
+            "quick_replies": ["상품 먼저 추천받기", "발 정보 입력 후 추천받기"],
+            "state": session.state.value,
+            "done": False,
+        }
 
     def _foot_issue_key(self, text: str) -> str:
         t = (text or "").strip().replace(" ", "")
@@ -944,15 +1180,54 @@ class ConversationController:
             return "3"
         return text
 
-    def get_initial_prompt(self) -> dict:
+    def _is_restart_intent(self, text: str) -> bool:
+        t = (text or "").strip().replace(" ", "")
+        return t in ("처음으로", "다시", "재진단", "다시시작", "새로시작")
+
+    def _is_consult_intent(self, text: str) -> bool:
+        t = (text or "").strip().replace(" ", "")
+        return t in ("상담연결", "상담", "상담원", "사람상담", "문의연결")
+
+    def _reset_session_for_restart(self, session: ChatSession) -> None:
+        session.state = SessionState.Q_ENTRY
+        session.preferred_style = None
+        session.foot_issues = None
+        session.hallux_severity = "0"
+        session.wide_severity = "0"
+        session.instep_severity = "0"
+        session.toe_detail = "0"
+        session.design = None
+        session.original_size = None
+        session.fit_experience = None
+        session.heel_slip_when_one_size_up = None
+        session.product_first = False
+        session.intake_mode = None
+        session.lite_answers = None
+        session.foot_detail_pending = None
+        session.measurement_available = None
+        session.foot_length_mm = None
+        session.foot_ball_width_mm = None
+        session.instep_circumference_mm = None
+        session.diagnosis_result = None
+        session.completed_at = None
+
+    def get_initial_prompt(self, session: Optional["ChatSession"] = None) -> dict:
+        quick_replies = [comfort.ENTRY_BUTTON_LITE, comfort.ENTRY_BUTTON_FULL]
+        if session and comfort.is_coupang_flow(session.traffic_src, session.pinned_product_id):
+            meta = comfort.lookup_product_meta(session.pinned_product_id)
+            pname = (meta.get("name") or "이 상품").strip()
+            if len(pname) > 36:
+                pname = pname[:36] + "…"
+            text = (
+                f"이 상품 기준으로 진단을 진행합니다.\n"
+                f"({pname})\n\n"
+                "아래 버튼에서 간단 진단 또는 정밀 진단을 선택해 주세요."
+            )
+        else:
+            text = "안녕하세요. 슈핏케어입니다.\n아래 버튼에서 시작 방식을 선택해 주세요."
         return {
-            "text": (
-                "✨ 안녕하세요! 슈핏케어입니다.\n"
-                "편하게 몇 가지만 알려주시면 맞춤 추천 도와드릴게요.\n"
-                "어디서부터 시작할까요?\n"
-                "상품 먼저 추천받기 / 발 정보 입력 후 추천받기"
-            ),
-            "quick_replies": ["상품 먼저 추천받기", "발 정보 입력 후 추천받기"],
+            "text": text,
+            "quick_replies": quick_replies,
             "state": SessionState.Q_ENTRY.value,
             "done": False,
         }

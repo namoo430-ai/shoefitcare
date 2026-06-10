@@ -20,6 +20,8 @@ from core.engine import CustomerInput, DiagnosisResult
 
 DB_PATH = os.environ.get("SHOEFITCARE_DB", "data/shoefitcare.db")
 RAG_DIR = os.environ.get("SHOEFITCARE_RAG_DIR", "data/rag_docs")
+RETENTION_DAYS_OPS = int(os.environ.get("SHOEFITCARE_RETENTION_DAYS_OPS", "365"))
+RETENTION_DAYS_LEARNING = int(os.environ.get("SHOEFITCARE_RETENTION_DAYS_LEARNING", "730"))
 
 
 # ──────────────────────────────────────────────
@@ -456,3 +458,117 @@ def get_return_rate_report(
         "by_design": by_design,
         "by_stretch_step": by_stretch,
     }
+
+
+def delete_session_artifacts(
+    session_id: str,
+    db_path: str = DB_PATH,
+    rag_dir: str = RAG_DIR,
+) -> dict:
+    """
+    고객 삭제 요청 대응:
+    - SQLite의 세션 관련 행(customer_inputs/diagnosis_results/return_feedback) 삭제
+    - RAG 문서 삭제
+    """
+    if not session_id or not str(session_id).strip():
+        raise ValueError("session_id is required")
+
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    sid = str(session_id).strip()
+    deleted = {
+        "session_id": sid,
+        "customer_inputs": 0,
+        "diagnosis_results": 0,
+        "return_feedback": 0,
+        "rag_document_deleted": False,
+    }
+    c.execute("DELETE FROM return_feedback WHERE session_id = ?", (sid,))
+    deleted["return_feedback"] = c.rowcount if c.rowcount > 0 else 0
+    c.execute("DELETE FROM diagnosis_results WHERE session_id = ?", (sid,))
+    deleted["diagnosis_results"] = c.rowcount if c.rowcount > 0 else 0
+    c.execute("DELETE FROM customer_inputs WHERE session_id = ?", (sid,))
+    deleted["customer_inputs"] = c.rowcount if c.rowcount > 0 else 0
+    conn.commit()
+    conn.close()
+
+    rag_path = os.path.join(rag_dir, f"{sid}.json")
+    if os.path.exists(rag_path):
+        os.remove(rag_path)
+        deleted["rag_document_deleted"] = True
+    return deleted
+
+
+def purge_expired_data(
+    db_path: str = DB_PATH,
+    rag_dir: str = RAG_DIR,
+    retention_days_ops: int = RETENTION_DAYS_OPS,
+    retention_days_learning: int = RETENTION_DAYS_LEARNING,
+) -> dict:
+    """
+    보존기간 기준 자동 파기:
+    - 운영 DB: customer_inputs/diagnosis_results/return_feedback
+    - 학습 RAG: JSON 문서
+    """
+    now = datetime.now()
+    cutoff_ops = now.timestamp() - max(1, int(retention_days_ops)) * 86400
+    cutoff_learning = now.timestamp() - max(1, int(retention_days_learning)) * 86400
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    c.execute("SELECT session_id, created_at FROM customer_inputs")
+    old_sessions: list[str] = []
+    for sid, created_at in c.fetchall():
+        ts = _to_unix_ts(created_at)
+        if ts is None or ts >= cutoff_ops:
+            continue
+        old_sessions.append(str(sid))
+
+    deleted_feedback = 0
+    deleted_diag = 0
+    deleted_input = 0
+    for sid in old_sessions:
+        c.execute("DELETE FROM return_feedback WHERE session_id = ?", (sid,))
+        deleted_feedback += c.rowcount if c.rowcount > 0 else 0
+        c.execute("DELETE FROM diagnosis_results WHERE session_id = ?", (sid,))
+        deleted_diag += c.rowcount if c.rowcount > 0 else 0
+        c.execute("DELETE FROM customer_inputs WHERE session_id = ?", (sid,))
+        deleted_input += c.rowcount if c.rowcount > 0 else 0
+    conn.commit()
+    conn.close()
+
+    deleted_rag = 0
+    if os.path.isdir(rag_dir):
+        for name in os.listdir(rag_dir):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(rag_dir, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime < cutoff_learning:
+                try:
+                    os.remove(path)
+                    deleted_rag += 1
+                except OSError:
+                    continue
+
+    return {
+        "retention_days_ops": int(retention_days_ops),
+        "retention_days_learning": int(retention_days_learning),
+        "deleted_customer_inputs": deleted_input,
+        "deleted_diagnosis_results": deleted_diag,
+        "deleted_return_feedback": deleted_feedback,
+        "deleted_rag_docs": deleted_rag,
+    }
+
+
+def _to_unix_ts(raw_dt: Optional[str]) -> Optional[float]:
+    if not raw_dt:
+        return None
+    text = str(raw_dt).strip()
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None

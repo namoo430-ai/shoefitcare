@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>상품 상세 · 슈핏케어</title>
+  <style>
+    :root { --pink: #c97b84; --bg: #f2f2f7; --card: #fff; --text: #1c1c1e; --muted: #6b7280; --border: #e5e5ea; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    .detail { max-width: 430px; margin: 0 auto; background: #fff; }
+    .detail img {
+      display: block;
+      width: 100%;
+      height: auto;
+      vertical-align: top;
+    }
+    .pilot-cta {
+      margin: 0;
+      padding: 36px 8px 56px;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .pilot-cta-inner {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 32px 12px 42px;
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    .pilot-cta h2 {
+      margin: 0 0 14px;
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1.38;
+      letter-spacing: -0.03em;
+      text-align: center;
+    }
+    .pilot-cta .lead {
+      margin: 0 0 22px;
+      font-size: 20px;
+      line-height: 1.55;
+      color: #4b5563;
+      text-align: center;
+    }
+    @keyframes pilot-label-blink {
+      0%, 72% { opacity: 1; }
+      74% { opacity: 0.35; }
+      76% { opacity: 1; }
+      78% { opacity: 0.35; }
+      80%, 100% { opacity: 1; }
+    }
+    .btn-pilot-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 0;
+    }
+    .btn-pilot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: auto;
+      max-width: 100%;
+      text-align: center;
+      text-decoration: none;
+      border-radius: 12px;
+      padding: 14px 20px;
+      font-size: 20px;
+      font-weight: 600;
+      background: var(--pink);
+      color: #fff;
+      border: 0;
+      line-height: 1.35;
+      transition: transform 0.12s ease;
+    }
+    .btn-pilot-label {
+      animation: pilot-label-blink 2.2s linear infinite;
+    }
+    .btn-pilot:active {
+      transform: scale(0.98);
+    }
+    .btn-pilot:active .btn-pilot-label {
+      animation: none;
+      opacity: 1;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .btn-pilot-label { animation: none; }
+    }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  </style>
+</head>
+<body>
+  <div class="detail" id="detail-root">
+    <!-- images before CTA (001_01 … 001_07) injected by script -->
+    <section class="pilot-cta" aria-labelledby="pilot-cta-title">
+      <div class="pilot-cta-inner">
+        <h2 id="pilot-cta-title">사이즈는 맞는데<br>발볼이 불편하신가요?</h2>
+        <p class="lead">몇 가지 질문만으로 내 발에 맞는 발볼 핏 조절 방법을 확인해 보세요.</p>
+        <div class="btn-pilot-wrap">
+          <a id="link-pilot" class="btn-pilot" href="#"><span class="btn-pilot-label">내 발에 맞는 발볼 확인 하기</span></a>
+        </div>
+      </div>
+    </section>
+    <!-- images after CTA injected by script -->
+  </div>
+  <script>
+    (function () {
+      var IMG_BASE = "/product-images/prouct_SR266/";
+      var BEFORE = [
+        "001_01.jpg", "001_02.jpg", "001_03.jpg", "001_04.jpg",
+        "001_05.jpg", "001_06.jpg", "001_07.jpg"
+      ];
+      var AFTER = [
+        "01_01.jpg", "01_03.jpg", "01_05.jpg", "01_06.jpg", "01_07.jpg",
+        "01_09.jpg", "01_10.jpg", "01_11.jpg", "01_12.jpg", "01_14.jpg",
+        "01_15.jpg", "01_16.jpg"
+      ];
+      var root = document.getElementById("detail-root");
+      var cta = root.querySelector(".pilot-cta");
+
+      function imgTag(file) {
+        var el = document.createElement("img");
+        el.src = IMG_BASE + file;
+        el.alt = "";
+        el.loading = "lazy";
+        el.decoding = "async";
+        return el;
+      }
+
+      BEFORE.forEach(function (f) {
+        root.insertBefore(imgTag(f), cta);
+      });
+      AFTER.forEach(function (f) {
+        root.appendChild(imgTag(f));
+      });
+
+      var params = new URLSearchParams(window.location.search);
+      var pid = params.get("product_id") || "__PRODUCT_ID__";
+      var q = "product_id=" + encodeURIComponent(pid) + "&src=html_detail";
+      var pilotHref = window.location.origin + "/pilot?" + q;
+      var link = document.getElementById("link-pilot");
+      link.href = pilotHref;
+
+      function postPilotEvent(eventName) {
+        var body = JSON.stringify({
+          event: eventName,
+          product_id: pid,
+          channel: "html_detail"
+        });
+        var url = window.location.origin + "/pilot/event";
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+          return;
+        }
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: body,
+          keepalive: true
+        }).catch(function () {});
+      }
+
+      var viewKey = "sf_detail_view:" + pid;
+      if (!sessionStorage.getItem(viewKey)) {
+        sessionStorage.setItem(viewKey, "1");
+        postPilotEvent("detail_view");
+      }
+
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        postPilotEvent("detail_cta_click");
+        window.location.href = pilotHref;
+      });
+    })();
+  </script>
+</body>
+</html>
