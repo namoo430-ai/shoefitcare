@@ -95,6 +95,12 @@ try:
     def _admin_token_from_query(token: str | None = None) -> str | None:
         return (token or "").strip() or None
 
+    def _resolve_admin_token(
+        x_admin_token: str | None = None,
+        token: str | None = None,
+    ) -> str | None:
+        return (x_admin_token or "").strip() or _admin_token_from_query(token)
+
     _DEMO_HTML = """<!doctype html>
 <html lang="ko">
 <head>
@@ -850,16 +856,18 @@ try:
         x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
         token: str | None = None,
     ):
-        tok = (x_admin_token or "").strip() or _admin_token_from_query(token)
-        _require_admin(tok)
+        _require_admin(_resolve_admin_token(x_admin_token, token))
         path = resolve_precision_photo_path(diagnosis_id)
         if not path:
             raise HTTPException(status_code=404, detail="photo not found")
         return FileResponse(path)
 
     @app.get("/api/admin/kpi")
-    def api_admin_kpi(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
-        _require_admin(x_admin_token)
+    def api_admin_kpi(
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        _require_admin(_resolve_admin_token(x_admin_token, token))
         return {
             "counts": kpi_counts(),
             "cohort": return_rate_by_cohort(),
@@ -870,8 +878,9 @@ try:
     def api_admin_diagnoses(
         q: str = "",
         x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
     ):
-        _require_admin(x_admin_token)
+        _require_admin(_resolve_admin_token(x_admin_token, token))
         return {"items": list_diagnoses(q=q)}
 
     class AdminDiagnosisPatch(BaseModel):

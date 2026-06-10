@@ -363,6 +363,7 @@ h2{margin:20px 0 8px;font-size:16px}
 </style></head><body>
 <h1>슈핏케어 파일럿 관리자</h1>
 <p class="sub">토큰: URL에 <code>?token=...</code> (환경변수 ADMIN_TOKEN)</p>
+<div id="admin-err" style="display:none;margin:12px 0;padding:12px;border-radius:8px;background:#fef2f2;color:#991b1b;font-size:14px"></div>
 <h2>① 상세 → 간편 진단</h2>
 <div id="funnel-detail" class="cards"></div>
 <h2>② 정밀 진단 (발치수 → 접수 완료)</h2>
@@ -392,7 +393,7 @@ h2{margin:20px 0 8px;font-size:16px}
 <select id="ret"><option value="0">반품 없음</option><option value="1">반품</option></select>
 <button id="addOrder">등록</button>
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
+const token = (new URLSearchParams(location.search).get("token") || "").trim();
 const h = { "X-Admin-Token": token };
 const pct = (x)=> x!=null ? x+"%" : "-";
 function card(label, val, hint){
@@ -402,8 +403,27 @@ function card(label, val, hint){
 function cardPct(label, val, hint){
   return '<div class="card">'+label+'<b class="pct">'+pct(val)+'</b><small>'+hint+'</small></div>';
 }
+function showAdminErr(msg){
+  const el=document.getElementById("admin-err");
+  if(!el) return;
+  el.style.display="block";
+  el.textContent=msg;
+}
 async function load(){
-  const k = await (await fetch("/api/admin/kpi",{headers:h})).json();
+  if(!token){
+    showAdminErr("URL에 ?token= 값이 없습니다. Render ADMIN_TOKEN 과 동일한 값을 붙여 주세요. 예: /admin?token=여기");
+    return;
+  }
+  const kpiUrl = "/api/admin/kpi?token="+encodeURIComponent(token);
+  const kr = await fetch(kpiUrl,{headers:h});
+  if(!kr.ok){
+    const err = await kr.json().catch(()=>({}));
+    const hint = kr.status===401 ? "토큰이 Render Environment 의 ADMIN_TOKEN 과 다릅니다." : (err.detail||"");
+    showAdminErr("KPI 조회 실패 (HTTP "+kr.status+"). "+hint);
+    return;
+  }
+  document.getElementById("admin-err").style.display="none";
+  const k = await kr.json();
   const f = k.funnel || {};
   document.getElementById("funnel-detail").innerHTML =
     card("상세 노출", f.detail_views)+
@@ -442,7 +462,10 @@ async function load(){
     const rate = x.return_rate_pct!=null ? x.return_rate_pct+"%" : "-";
     return '<div class="card">'+label+'<b>'+rate+'</b><small>주문 '+ (x.orders||0) +' / 반품 '+(x.returns||0)+'</small></div>';
   }).join("");
-  const list = await (await fetch("/api/admin/diagnoses?q="+encodeURIComponent(document.getElementById("q").value||""),{headers:h})).json();
+  const listUrl = "/api/admin/diagnoses?token="+encodeURIComponent(token)+"&q="+encodeURIComponent(document.getElementById("q").value||"");
+  const lr = await fetch(listUrl,{headers:h});
+  if(!lr.ok){ showAdminErr("진단 목록 조회 실패 (HTTP "+lr.status+")"); return; }
+  const list = await lr.json();
   document.getElementById("rows").innerHTML = (list.items||[]).map(r=>{
     const photo = r.photo_storage_key
       ? '<a href="/api/admin/diagnoses/'+r.id+'/photo?token='+encodeURIComponent(token)+'" target="_blank" rel="noopener">보기</a>'
@@ -484,4 +507,4 @@ load();
 (function(){ const el=document.getElementById("photoDate"); if(el){ el.value=new Date().toISOString().slice(0,10); }})();
 </script></body></html>"""
 
-PILOT_BUILD = "20260605-pilot-order-page-cta"
+PILOT_BUILD = "20260610-admin-kpi-errors"
