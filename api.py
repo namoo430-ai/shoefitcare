@@ -725,12 +725,13 @@ try:
     @app.get("/health/build")
     def health_build():
         from pilot_engine import PILOT_RULE_VERSION
-        from pilot_links import PILOT_GO
+        from pilot_links import PILOT_GO, PILOT_SHORT_CODE
 
         return {
             "demo_ui_build": DEMO_UI_BUILD,
             "pilot_build": PILOT_BUILD,
             "pilot_short_paths": sorted(PILOT_GO.keys()),
+            "pilot_short_codes": dict(PILOT_SHORT_CODE),
             "pilot_rule_version": PILOT_RULE_VERSION,
             "pilot_4_questions": True,
             "pilot_5_questions": False,
@@ -748,6 +749,19 @@ try:
         """문자·CS용 짧은 URL → /pilot (상품별 return_url은 pilot_links.PILOT_GO)."""
         from pilot_links import pilot_path_for_sku
 
+        path = pilot_path_for_sku(sku)
+        if not path:
+            raise HTTPException(status_code=404, detail="unknown pilot sku")
+        return RedirectResponse(url=path, status_code=302)
+
+    @app.get("/s/{code}")
+    def pilot_ultra_short_link(code: str):
+        """초단축 코드 (예: /s/1) → /pilot. 매핑: pilot_links.PILOT_SHORT_CODE."""
+        from pilot_links import pilot_path_for_sku, sku_from_short_code
+
+        sku = sku_from_short_code(code)
+        if not sku:
+            raise HTTPException(status_code=404, detail="unknown short code")
         path = pilot_path_for_sku(sku)
         if not path:
             raise HTTPException(status_code=404, detail="unknown pilot sku")
