@@ -83,16 +83,40 @@ const sizes = [225,230,235,240,245,250,255];
 const params = new URLSearchParams(location.search);
 const productId = params.get("product_id") || "";
 const src = params.get("src") || "web";
+const returnUrl = (params.get("return_url") || params.get("order_url") || "").trim();
+const coupangChannel = /^coupang/i.test(src);
 function productDetailHref(){
   const q = productId ? "?product_id="+encodeURIComponent(productId) : "";
   return location.origin+"/product-detail"+q;
 }
-function resultDetailBackHtml(recommendationCode){
-  const hint = recommendationCode==="SF00"
+function orderPageHref(){
+  if(returnUrl) return returnUrl;
+  if(coupangChannel) return "";
+  return productDetailHref();
+}
+function orderBackLabel(){
+  if(returnUrl || coupangChannel) return "쿠팡에서 주문하기";
+  return "주문 페이지로 돌아가기";
+}
+function orderBackHint(recommendationCode){
+  if(returnUrl || coupangChannel){
+    return recommendationCode==="SF00"
+      ? '<p class="result-back-hint">안내 확인 후 아래 버튼으로 <b>쿠팡 상품 페이지</b>에서 사이즈를 선택해 주문해 주세요.</p>'
+      : '<p class="result-back-hint">발볼 안내·문의 후 주문하시려면 <b>쿠팡 상품 페이지</b>로 돌아가 주세요.</p>';
+  }
+  return recommendationCode==="SF00"
     ? '<p class="result-back-hint">안내를 확인하신 뒤, 아래 버튼으로 주문 페이지에서 사이즈를 선택해 주세요.</p>'
     : "";
+}
+function resultDetailBackHtml(recommendationCode){
+  const href = orderPageHref();
+  const hint = orderBackHint(recommendationCode);
+  if(!href){
+    return '<div class="result-detail-back-wrap">'+hint
+      +'<p class="result-back-hint">쿠팡 앱으로 돌아가 상품 페이지에서 주문해 주세요.</p></div>';
+  }
   return '<div class="result-detail-back-wrap">'+hint
-    +'<a class="btn-detail-back" href="'+productDetailHref()+'">주문 페이지로 돌아가기</a></div>';
+    +'<a class="btn-detail-back" href="'+href+'" rel="noopener">'+orderBackLabel()+'</a></div>';
 }
 function postPilotFunnelEvent(eventName, dxId){
   const body = {event:eventName, product_id:productId||null, channel:src};
@@ -146,7 +170,7 @@ function precisionStepHtml(){
 }
 function precisionCompleteHtml(opts){
   opts = opts || {};
-  const href = productDetailHref();
+  const href = orderPageHref();
   const photoNote = opts.photoUploaded
     ? '<p class="sub">발 모양 사진이 함께 접수되었습니다.</p>'
     : '<p class="sub">사진을 아직 올리지 않으셨다면, 종이에 그린 발 모양을 주문자 이름과 함께 <b>010-8931-6325</b>로 보내주셔도 됩니다.</p>';
@@ -156,7 +180,10 @@ function precisionCompleteHtml(opts){
     +'<p>보내주신 발 모양 사진과 입력해 주신 정밀 진단 정보를 함께 분석한 후, 간편 진단 결과를 반영하여 보다 정확한 발볼 늘림 안내 정보를 카카오톡으로 안내해 드립니다.</p>'
     +'<p>진단 결과는 보통 1~2시간 내 확인하실 수 있으며, 순차적으로 안내드리고 있습니다.</p>'
     +'<p>감사합니다. 😊</p>'
-    +'<a class="btn-detail-back" href="'+href+'">주문 페이지로 돌아가기</a></div>';
+    +(href
+      ? '<a class="btn-detail-back" href="'+href+'" rel="noopener">'+orderBackLabel()+'</a>'
+      : '<p class="result-back-hint">쿠팡 앱으로 돌아가 주문해 주세요.</p>')
+    +'</div>';
 }
 function showPrecisionComplete(opts){
   document.getElementById("prec-teaser").classList.add("hidden");
@@ -507,4 +534,4 @@ load();
 (function(){ const el=document.getElementById("photoDate"); if(el){ el.value=new Date().toISOString().slice(0,10); }})();
 </script></body></html>"""
 
-PILOT_BUILD = "20260610-admin-kpi-errors"
+PILOT_BUILD = "20260611-pilot-coupang-return"

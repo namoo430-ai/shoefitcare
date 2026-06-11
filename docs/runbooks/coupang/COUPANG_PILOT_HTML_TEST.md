@@ -9,8 +9,28 @@
 배포 후 예시:
 
 ```text
-https://<YOUR_DOMAIN>/product-detail?product_id=<쿠팡상품번호>
-https://<YOUR_DOMAIN>/pilot?product_id=<쿠팡상품번호>&src=html_detail
+https://<YOUR_DOMAIN>/product-detail?product_id=<SKU>&src=html_detail
+https://<YOUR_DOMAIN>/pilot?product_id=<SKU>&src=coupang_sms&return_url=<쿠팡상품페이지_URL_인코딩>
+```
+
+- **문자·쿠팡 유입:** `product-detail` 생략 가능 → **`/pilot` 직행** 권장.
+- **`return_url`:** 쿠팡 Wing 상품 페이지 URL (`encodeURIComponent`). 결과 화면 **「쿠팡에서 주문하기」** 버튼.
+- **`product-detail`:** 자사 이미지 상세 + CTA + admin 퍼널(`detail_view`)용. 쿠팡 링크 불가·문자만 쓸 때는 필수 아님.
+
+### SR266 · 문자 회신 링크 (운영 예시)
+
+쿠팡 상품: `products/6547505721` · `itemId=14603242244` · `vendorItemId=81845050827`
+
+```text
+https://shoefitcare-chatbot.onrender.com/pilot?product_id=SR266&src=coupang_sms&return_url=https%3A%2F%2Fwww.coupang.com%2Fvp%2Fproducts%2F6547505721%3FitemId%3D14603242244%26vendorItemId%3D81845050827
+```
+
+CS 문자 본문 예:
+
+```text
+[엄마신발 발볼 확인]
+위 링크를 눌러 발볼 확인을 진행해 주세요.
+완료 후 안내에 따라 쿠팡 판매자 문의 또는 진단번호를 알려 주세요.
 ```
 
 - 상품 이미지: `https://<YOUR_DOMAIN>/product-images/prouct_SR266/001_01.jpg` (배포 시 `images/` 포함 확인)
