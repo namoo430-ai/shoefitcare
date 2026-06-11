@@ -534,4 +534,4 @@ load();
 (function(){ const el=document.getElementById("photoDate"); if(el){ el.value=new Date().toISOString().slice(0,10); }})();
 </script></body></html>"""
 
-PILOT_BUILD = "20260611-pilot-coupang-return"
+PILOT_BUILD = "20260611-pilot-short-c"
