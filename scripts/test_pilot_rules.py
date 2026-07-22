@@ -36,6 +36,8 @@ from pilot_engine import (
 
     Q2_INSTEP,
 
+    Q2_NONE,
+
     Q3_MID,
 
     Q3_NONE,
@@ -95,7 +97,7 @@ def main() -> None:
 
         PilotInput(Q1_TIGHT, [Q2_BALL], Q3_SEVERE, 235, ""),
 
-        "SF03",
+        "SF02",
 
     )
 
@@ -223,7 +225,7 @@ def main() -> None:
 
         PilotInput(Q1_INSTEP, [Q2_INSTEP], Q3_SEVERE, 235, ""),
 
-        "SF04",
+        "SF03",
 
     )
 
@@ -235,7 +237,7 @@ def main() -> None:
 
     assert res_instep_dup.recommendation_code == "SF03"
 
-    assert res_instep_dup.precision_recommended is True
+    assert res_instep_dup.precision_recommended is False
 
     res_instep_only_sev = evaluate(
 
@@ -243,9 +245,19 @@ def main() -> None:
 
     )
 
-    assert res_instep_only_sev.recommendation_code == "SF04"
+    assert res_instep_only_sev.recommendation_code == "SF03"
 
-    assert res_instep_only_sev.precision_recommended is True
+    assert res_instep_only_sev.precision_recommended is False
+
+    res_tight_ball_sev = evaluate(
+
+        PilotInput(Q1_TIGHT, [Q2_BALL], Q3_SEVERE, 240, ""),
+
+    )
+
+    assert res_tight_ball_sev.recommendation_code == "SF02"
+
+    assert res_tight_ball_sev.precision_recommended is False
 
     _run(
 
@@ -256,11 +268,18 @@ def main() -> None:
     )
 
     _run(
+        PilotInput(Q1_INSTEP, [Q2_INSTEP, Q2_BALL], Q3_SEVERE, 235, ""),
+        "SF03",
+    )
 
+    _run(
         PilotInput(Q1_LOOSE, [], Q3_MID, 235, ""),
-
         "SF04",
+    )
 
+    _run(
+        PilotInput(Q1_LOOSE, [Q2_NONE], Q3_NONE, 235, ""),
+        "SF04",
     )
 
     _run(

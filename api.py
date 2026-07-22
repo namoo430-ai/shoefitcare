@@ -73,15 +73,29 @@ try:
         update_diagnosis,
         register_order_no_diagnosis,
         list_diagnoses,
+        get_diagnosis_by_code,
         kpi_counts,
         return_rate_by_cohort,
         record_funnel_event,
         funnel_kpi,
+        foot_profile_kpi,
+        return_prior_lookup,
+        backfill_foot_profiles,
+        coupang_pilot_kpi,
+        naver_pilot_kpi,
+        daily_diagnosis_counts,
+        list_funnel_events_for_diagnosis,
+        get_ops_counters,
+        upsert_ops_counter,
+        pilot_storage_meta,
         upsert_photo_daily,
         save_precision_photo,
         resolve_precision_photo_path,
     )
-    from pilot_ui import PILOT_HTML, ADMIN_HTML, PILOT_BUILD
+    from pilot_ui import PILOT_HTML, ADMIN_HTML, SELLER_QUICK_HTML, PILOT_BUILD, PILOT_COPY_JSON
+    from pilot_engine import PILOT_RULE_VERSION, sf_engine_hint
+    from pilot_foot_compare import build_foot_compare_view
+    from pilot_seller_reply import build_seller_reply
 
     init_pilot_tables()
     _ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
@@ -100,6 +114,55 @@ try:
         token: str | None = None,
     ) -> str | None:
         return (x_admin_token or "").strip() or _admin_token_from_query(token)
+
+    def _admin_date_params(
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, str | None]:
+        fd = (from_date or "").strip()[:10] or None
+        td = (to_date or "").strip()[:10] or None
+        return {"from_date": fd, "to_date": td}
+
+    def _admin_diagnosis_detail_payload(row: dict) -> dict:
+        q2 = row.get("q2") or []
+        if not q2 and row.get("q2_json"):
+            try:
+                q2 = json.loads(row["q2_json"])
+            except json.JSONDecodeError:
+                q2 = []
+        hint_raw = row.get("engine_hint_json")
+        engine_hint: dict = {}
+        if hint_raw:
+            try:
+                engine_hint = json.loads(hint_raw)
+            except json.JSONDecodeError:
+                engine_hint = {}
+        foot_compare = build_foot_compare_view(
+            r_code=row.get("r_code") or "R1",
+            p_code=row.get("p_code") or "P0",
+            s_code=row.get("s_code") or "S0",
+            q1=row.get("q1") or "",
+            q2=q2,
+            recommendation_code=row.get("recommendation_code") or "",
+        )
+        code = (row.get("recommendation_code") or "SF00").strip().upper()
+        stretch_hint = sf_engine_hint(code)
+        try:
+            seller_preview = build_seller_reply(row, seller_fit_line="기본핏")
+        except ValueError:
+            seller_preview = {}
+        events = list_funnel_events_for_diagnosis(str(row.get("id") or ""))
+        safe = {k: row.get(k) for k in row if k != "contact_masked"}
+        safe["q2"] = q2
+        safe["foot_profile"] = row.get("foot_profile")
+        return {
+            "diagnosis": safe,
+            "foot_compare": foot_compare,
+            "engine_hint": engine_hint,
+            "stretch_hint": stretch_hint,
+            "seller_preview": seller_preview,
+            "funnel_timeline": events,
+        }
 
     _DEMO_HTML = """<!doctype html>
 <html lang="ko">
@@ -725,13 +788,23 @@ try:
     @app.get("/health/build")
     def health_build():
         from pilot_engine import PILOT_RULE_VERSION
-        from pilot_links import PILOT_GO, PILOT_SHORT_CODE
+        from pilot_links import (
+            PILOT_GO,
+            PILOT_SHORT_CODE,
+            naver_pilot_registry,
+            naver_sms_short_code_map,
+        )
+
+        from pilot_copy import PILOT_COPY_VERSION
 
         return {
             "demo_ui_build": DEMO_UI_BUILD,
             "pilot_build": PILOT_BUILD,
+            "pilot_copy_version": PILOT_COPY_VERSION,
             "pilot_short_paths": sorted(PILOT_GO.keys()),
             "pilot_short_codes": dict(PILOT_SHORT_CODE),
+            "naver_pilot_skus": sorted(naver_pilot_registry().keys()),
+            "naver_sms_short_codes": naver_sms_short_code_map(),
             "pilot_rule_version": PILOT_RULE_VERSION,
             "pilot_4_questions": True,
             "pilot_5_questions": False,
@@ -740,6 +813,7 @@ try:
             "full_without_comfort_block": True,
             "coupang_inquiry_cta": True,
             "admin_dashboard": True,
+            "seller_quick": True,
             "pilot_precision_photo_upload": True,
             "product_detail_html": True,
         }
@@ -753,6 +827,30 @@ try:
         if not path:
             raise HTTPException(status_code=404, detail="unknown pilot sku")
         return RedirectResponse(url=path, status_code=302)
+
+    @app.get("/nv/{sku}")
+    def naver_pilot_by_sku(sku: str):
+        """네이버 CS 회신 — 상품 ID 직접 (예: /nv/SR266, /nv/NAVER_SKU_01)."""
+        from pilot_links import naver_pilot_path_for_sku
+
+        path = naver_pilot_path_for_sku(sku)
+        if not path:
+            raise HTTPException(status_code=404, detail="invalid naver product_id")
+        return RedirectResponse(url=path, status_code=302)
+
+    @app.get("/n/{code}")
+    def naver_sms_short_link(code: str):
+        """네이버 CS·톡톡: 짧은코드(/n/1) 또는 product_id(/n/SR266) → pilot?src=naver_sms"""
+        from pilot_links import naver_pilot_path_for_code
+
+        path = naver_pilot_path_for_code(code)
+        if not path:
+            raise HTTPException(status_code=404, detail="unknown naver short code")
+        return RedirectResponse(
+            url=path,
+            status_code=302,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/s/{code}")
     def pilot_ultra_short_link(code: str):
@@ -769,12 +867,90 @@ try:
 
     @app.get("/pilot", response_class=HTMLResponse)
     def pilot_page():
-        html = PILOT_HTML.replace("__PILOT_BUILD__", PILOT_BUILD)
+        html = PILOT_HTML.replace("__PILOT_BUILD__", PILOT_BUILD).replace(
+            "__PILOT_COPY_JSON__", PILOT_COPY_JSON
+        )
         return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     @app.get("/admin", response_class=HTMLResponse)
     def admin_page():
         return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+    @app.get("/seller/quick", response_class=HTMLResponse)
+    def seller_quick_page():
+        return HTMLResponse(SELLER_QUICK_HTML, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+    def _seller_diagnosis_summary(row: dict) -> dict:
+        return {
+            "id": row.get("id"),
+            "diagnosis_code": row.get("diagnosis_code"),
+            "recommendation_code": row.get("recommendation_code"),
+            "q4": row.get("q4"),
+            "product_id": row.get("product_id"),
+            "channel": row.get("channel"),
+            "r_code": row.get("r_code"),
+            "p_code": row.get("p_code"),
+            "s_code": row.get("s_code"),
+            "actual_work_step": row.get("actual_work_step"),
+            "memo": row.get("memo"),
+            "created_at": row.get("created_at"),
+        }
+
+    @app.get("/api/seller/diagnosis")
+    def api_seller_diagnosis(
+        code: str = "",
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        _require_admin(_resolve_admin_token(x_admin_token, token))
+        row = get_diagnosis_by_code(code)
+        if not row:
+            raise HTTPException(status_code=404, detail="진단번호를 찾을 수 없습니다.")
+        return _seller_diagnosis_summary(row)
+
+    class SellerReplyRequest(BaseModel):
+        diagnosis_code: str
+        seller_fit_line: str = "기본핏"
+        actual_work_step: int | None = None
+        save: bool = False
+        memo: str | None = None
+
+    @app.post("/api/seller/reply")
+    def api_seller_reply(
+        body: SellerReplyRequest,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        _require_admin(_resolve_admin_token(x_admin_token, token))
+        row = get_diagnosis_by_code(body.diagnosis_code)
+        if not row:
+            raise HTTPException(status_code=404, detail="진단번호를 찾을 수 없습니다.")
+        try:
+            replies = build_seller_reply(
+                row,
+                seller_fit_line=body.seller_fit_line,
+                actual_work_step=body.actual_work_step,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if body.save and row.get("id"):
+            step = body.actual_work_step
+            if step is None:
+                step = int(replies.get("suggested_work_step") or 0)
+            memo_bits = [f"핏:{replies.get('seller_fit_line', '')}"]
+            if body.memo:
+                memo_bits.append(body.memo.strip())
+            update_diagnosis(
+                row["id"],
+                {
+                    "actual_work_step": step,
+                    "memo": " · ".join(memo_bits),
+                },
+            )
+        return {
+            **replies,
+            "diagnosis": _seller_diagnosis_summary(row),
+        }
 
     class PilotDiagnoseRequest(BaseModel):
         q1: str
@@ -794,6 +970,12 @@ try:
             channel=req.channel,
             product_id=req.product_id,
         )
+
+    @app.get("/api/pilot/store-links")
+    def api_pilot_store_links():
+        from pilot_store_links import naver_store_links
+
+        return naver_store_links()
 
     class PilotPrecisionRequest(BaseModel):
         diagnosis_id: str
@@ -890,24 +1072,122 @@ try:
 
     @app.get("/api/admin/kpi")
     def api_admin_kpi(
+        from_date: str | None = None,
+        to_date: str | None = None,
         x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
         token: str | None = None,
     ):
         _require_admin(_resolve_admin_token(x_admin_token, token))
+        from pilot_ui import PILOT_BUILD as _pb
+
+        dates = _admin_date_params(from_date, to_date)
+        fd, td = dates["from_date"], dates["to_date"]
         return {
-            "counts": kpi_counts(),
-            "cohort": return_rate_by_cohort(),
-            "funnel": funnel_kpi(),
+            "counts": kpi_counts(from_date=fd, to_date=td),
+            "cohort": return_rate_by_cohort(from_date=fd, to_date=td),
+            "funnel": funnel_kpi(from_date=fd, to_date=td),
+            "storage": pilot_storage_meta(),
+            "foot_profile": foot_profile_kpi(from_date=fd, to_date=td),
+            "coupang": coupang_pilot_kpi(from_date=fd, to_date=td),
+            "naver": naver_pilot_kpi(from_date=fd, to_date=td),
+            "daily_diagnoses": daily_diagnosis_counts(from_date=fd, to_date=td),
+            "daily_naver": daily_diagnosis_counts(
+                from_date=fd, to_date=td, channel_like="naver%"
+            ),
+            "daily_coupang": daily_diagnosis_counts(
+                from_date=fd, to_date=td, channel_like="coupang%"
+            ),
+            "pilot_build": _pb,
+            "pilot_rule_version": PILOT_RULE_VERSION,
+            "from_date": fd,
+            "to_date": td,
         }
+
+    class AdminCoupangOpsRequest(BaseModel):
+        wing_orders: int = 0
+        sms_sent: int = 0
+        inquiry_inbound: int = 0
+        memo: str = ""
+
+    @app.put("/api/admin/coupang-ops")
+    def api_admin_coupang_ops(
+        body: AdminCoupangOpsRequest,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        memo = body.memo or ""
+        upsert_ops_counter("coupang_wing_orders", body.wing_orders, memo)
+        upsert_ops_counter("coupang_sms_sent", body.sms_sent, memo)
+        upsert_ops_counter("coupang_inquiry_inbound", body.inquiry_inbound, memo)
+        return {"ok": True, "coupang": coupang_pilot_kpi()}
+
+    class AdminNaverOpsRequest(BaseModel):
+        store_orders: int = 0
+        sms_sent: int = 0
+        talktalk_inbound: int = 0
+        memo: str = ""
+
+    @app.put("/api/admin/naver-ops")
+    def api_admin_naver_ops(
+        body: AdminNaverOpsRequest,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        _require_admin(x_admin_token)
+        memo = body.memo or ""
+        upsert_ops_counter("naver_store_orders", body.store_orders, memo)
+        upsert_ops_counter("naver_sms_sent", body.sms_sent, memo)
+        upsert_ops_counter("naver_talktalk_inbound", body.talktalk_inbound, memo)
+        return {"ok": True, "naver": naver_pilot_kpi()}
+
+    @app.get("/api/admin/diagnoses/by-code/{diagnosis_code}")
+    def api_admin_diagnosis_by_code(
+        diagnosis_code: str,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        _require_admin(_resolve_admin_token(x_admin_token, token))
+        row = get_diagnosis_by_code(diagnosis_code)
+        if not row:
+            raise HTTPException(status_code=404, detail="진단번호를 찾을 수 없습니다.")
+        return _admin_diagnosis_detail_payload(row)
+
+    @app.get("/api/admin/return-prior")
+    def api_admin_return_prior(
+        r_code: str,
+        p_code: str,
+        s_code: str,
+        product_id: str | None = None,
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+        token: str | None = None,
+    ):
+        _require_admin(_resolve_admin_token(x_admin_token, token))
+        return return_prior_lookup(r_code, p_code, s_code, product_id=product_id)
 
     @app.get("/api/admin/diagnoses")
     def api_admin_diagnoses(
         q: str = "",
+        r_code: str = "",
+        p_code: str = "",
+        from_date: str | None = None,
+        to_date: str | None = None,
+        workshop: bool = False,
+        pending_work: bool = False,
         x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
         token: str | None = None,
     ):
         _require_admin(_resolve_admin_token(x_admin_token, token))
-        return {"items": list_diagnoses(q=q)}
+        dates = _admin_date_params(from_date, to_date)
+        return {
+            "items": list_diagnoses(
+                q=q,
+                r_code=r_code,
+                p_code=p_code,
+                from_date=dates["from_date"],
+                to_date=dates["to_date"],
+                workshop_only=workshop,
+                pending_work_only=pending_work,
+            )
+        }
 
     class AdminDiagnosisPatch(BaseModel):
         order_no: str | None = None

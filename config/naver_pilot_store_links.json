@@ -1,0 +1,9 @@
+{
+  "talktalk_url": "https://talk.naver.com/ct/wc82wv",
+  "fit_category_urls": {
+    "기본핏": "",
+    "편한핏": "",
+    "아주 편한핏": ""
+  },
+  "memo": "스토어팜 카테고리 URL·톡톡(챗봇) 진입 URL. 로그인 후 상담으로 이어지는 공식 URL만 넣기. 빈 값이면 톡톡 열기 버튼 숨김."
+}

@@ -1,0 +1,14 @@
+{
+  "default_src": "naver_sms",
+  "products": {
+    "SR266": {
+      "short_codes": ["1", "266"],
+      "return_url": "",
+      "display_name": "",
+      "stretch_on_option": false,
+      "stretch_option_label": "발볼 늘림",
+      "exchange_event_active": true,
+      "memo": "파일럿 대표 — stretch_on_option true 시 주문 옵션 안내, false 시 톡톡 접수"
+    }
+  }
+}

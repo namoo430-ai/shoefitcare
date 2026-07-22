@@ -32,6 +32,8 @@
 ```
 
 ### 참고
-- Render free 플랜은 유휴 시 슬립이 발생할 수 있습니다.
+- Render free 플랜은 유휴 시 슬립이 발생할 수 있습니다. `/admin` 첫 로딩이 느리면 30~60초 후 새로고침.
+- 루트 `/` 는 **파일럿(`/pilot`)** 으로 리다이렉트됩니다. 관리자는 **`/admin?token=...`** 북마크를 사용하세요.
+- **파일럿 진단·SF01 집계**는 `data/shoefitcare.db`(SQLite)에 저장됩니다. **재배포·디스크 없는 인스턴스**에서는 DB가 비워져 집계가 0으로 돌아갈 수 있습니다. 운영 KPI 유지가 필요하면 Render **Persistent Disk** 마운트 또는 외부 DB를 검토하세요. SQLite + Disk 적용 절차: [RENDER_PERSISTENT_DISK_CHECKLIST.md](./RENDER_PERSISTENT_DISK_CHECKLIST.md).
 - 발표 데모 전에는 한 번 호출해 워밍업해두는 것을 권장합니다.
 

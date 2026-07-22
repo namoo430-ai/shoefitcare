@@ -17,6 +17,7 @@ Q2_HALLUX = "엄지발가락 옆(무지외반)"
 Q2_PINKY = "새끼 발가락쪽"
 Q2_BALL = "발볼 부분"
 Q2_INSTEP = "발등 부분"
+Q2_INDEX = "검지발가락"
 Q2_NONE = "불편 사항 없음"
 
 Q3_SLIGHT = "가끔 신경 쓰여요"
@@ -30,6 +31,8 @@ def normalize_q1(q1: str) -> str:
     legacy = {
         "발볼이 꽉 끼는 편이에요": Q1_TIGHT,
         "특별한 불편은 없어요": Q1_NONE,
+        "평소 대부분 신발이 헐거운 편이에요": Q1_LOOSE,
+        "대부분 신발이 헐거운 편이에요": Q1_LOOSE,
     }
     return legacy.get(q1, q1)
 
@@ -55,7 +58,7 @@ SHOE_SIZES = list(range(225, 256, 5))
 STRETCH_CODES = frozenset({"SF01", "SF02"})
 
 # 파일럿 룰·문구 배포 세대 (반품 코호트를 버전별로 자를 때 사용)
-PILOT_RULE_VERSION = "20260605-sf00-fit-copy"
+PILOT_RULE_VERSION = "20260619-sf04-loose-sf05-precision"
 
 
 @dataclass
@@ -80,12 +83,14 @@ def _has(q2: list[str], key: str) -> bool:
     return key in (q2 or [])
 
 
+def _has_hallux_or_index(q2: list[str]) -> bool:
+    return _has(q2, Q2_HALLUX) or _has(q2, Q2_INDEX)
 def compute_complex_case(q2: list[str]) -> bool:
     if not q2 or (len(q2) == 1 and Q2_NONE in q2):
         return False
     if len(q2) >= 2:
         return True
-    if _has(q2, Q2_HALLUX):
+    if _has_hallux_or_index(q2):
         return True
     return False
 
@@ -97,17 +102,22 @@ def precision_recommended(
     code: str,
     q1: str = "",
 ) -> bool:
-    if complex_case:
-        return True
-    if q3 == Q3_SEVERE:
-        return True
-    if code == "SF04":
-        return True
+    """고객 UI 정밀 권장 플래그. 파일럿(네이버)은 간편진단·복사 우선 — 항상 False."""
+    _ = (complex_case, q3, code, q1)
     return False
 
 
 def _q2_instep_selected(q2: list[str]) -> bool:
     return _has(q2, Q2_INSTEP)
+
+
+def _q2_active_pain_areas(q2: list[str]) -> list[str]:
+    return [x for x in (q2 or []) if x and x != Q2_NONE]
+
+
+def _ball_only(q2: list[str]) -> bool:
+    active = _q2_active_pain_areas(q2)
+    return len(active) == 1 and active[0] == Q2_BALL
 
 
 def evaluate(inp: PilotInput) -> PilotResult:
@@ -133,7 +143,10 @@ def evaluate(inp: PilotInput) -> PilotResult:
         )
 
     if inp.q3 == Q3_NONE:
-        code = "SF00"
+        if inp.q1 == Q1_LOOSE or inp.q5 == Q5_LOOSE:
+            code = "SF04"
+        else:
+            code = "SF00"
         msg = _message_for(code, q1=inp.q1, q4=inp.q4, q2=q2)
         cx = compute_complex_case(q2)
         return PilotResult(
@@ -148,11 +161,13 @@ def evaluate(inp: PilotInput) -> PilotResult:
     code = "SF00"
     instep_adj = False
 
-    if inp.q1 == Q1_TIGHT and inp.q3 == Q3_SEVERE:
+    if inp.q1 == Q1_TIGHT and inp.q3 == Q3_SEVERE and _ball_only(q2):
+        code = "SF02"
+    elif inp.q1 == Q1_TIGHT and inp.q3 == Q3_SEVERE:
         code = "SF03"
     elif (
         inp.q1 == Q1_INSTEP
-        and _has(q2, Q2_HALLUX)
+        and _has_hallux_or_index(q2)
         and inp.q3 == Q3_SEVERE
     ):
         code = "SF03"
@@ -160,9 +175,17 @@ def evaluate(inp: PilotInput) -> PilotResult:
         inp.q1 == Q1_INSTEP
         and _q2_instep_selected(q2)
         and inp.q3 == Q3_SEVERE
+        and len(_q2_active_pain_areas(q2)) == 1
     ):
-        code = "SF04"
-    elif _has(q2, Q2_HALLUX) and inp.q3 == Q3_SEVERE:
+        code = "SF03"
+    elif (
+        inp.q1 == Q1_INSTEP
+        and _q2_instep_selected(q2)
+        and inp.q3 == Q3_SEVERE
+    ):
+        # SF04 = 칼발·좁은발(헐거움) 전용 — 발등 복합·심함은 SF03 + 정밀(SF05) 경로
+        code = "SF03"
+    elif _has_hallux_or_index(q2) and inp.q3 == Q3_SEVERE:
         code = "SF02"
     elif inp.q1 == Q1_SLIP and inp.q3 == Q3_SEVERE and _has(q2, Q2_BALL):
         code = "SF02"
@@ -206,7 +229,8 @@ def evaluate(inp: PilotInput) -> PilotResult:
 
 
 def apply_precision_sf05(previous_code: str) -> Optional[str]:
-    if previous_code == "SF04":
+    """정밀 진단 완료 → SF05 (간편 SF04=헐거움 외 코드도 정밀 후 SF05)."""
+    if (previous_code or "").strip():
         return "SF05"
     return None
 
@@ -234,7 +258,6 @@ def _message_for(
     instep_stretch = (
         q1 == Q1_INSTEP and code == "SF01" and _q2_instep_selected(q2)
     )
-    instep_severe = q1 == Q1_INSTEP and code == "SF04"
     smaller = _smaller_size_mm(q4) if slip else None
 
     def _stretch_title() -> str:
@@ -283,20 +306,14 @@ def _message_for(
         "SF02": _stretch_title() + sf02_line,
         "SF03": (
             "전체적으로 압박이 심한 경우 한 사이즈를 크게 하시는 것을 추천드립니다.\n"
-            "복합적인 통증이신 경우 정밀 진단을 받아 보세요."
+            "불편이 계속되면 판매자 문의로 맞춤 안내를 받아 보세요."
         ),
         "SF04": (
-            (
-                "발등 압박이 매우 심하게 느껴지는 경우입니다.\n"
-                "한 사이즈 크게 주문을 검토해 보시고, 정밀 진단을 받아 보세요."
-            )
-            if instep_severe
-            else (
-                "고객님은 발볼이 좁은 유형으로 추정됩니다.\n"
-                "엄마신발은 일반 신발보다 발볼이 넓고 편안하게 제작된 제품입니다.\n"
-                "평소 신발이 자주 헐거운 편이라면 한사이즈 작게 주문하는 것을 고려해 보세요.\n"
-                "칼발 등으로 발길이 때문에 사이즈를 줄이기 어려우면 정밀 진단을 권장드립니다."
-            )
+            "평소 신발이 여유 있는 편으로 답해 주셨어요.\n"
+            "발길이 때문에 한 사이즈 크게 신으시면 신발이 헐거워 느껴질 수 있어요 (참고).\n"
+            "발볼은 좁은 편일 수 있으나, 길이 때문에 작게 신기 어려운 경우가 많습니다.\n"
+            "톡톡으로 문의해 주시면 한 사이즈 크게 주문을 유지하시고 "
+            "앞깔창(앞부분 깔창) 보정으로 맞추는 방법을 안내해 드릴 수 있어요."
         ),
         "SF05": (
             "정밀 진단 결과\n"
