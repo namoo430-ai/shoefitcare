@@ -228,9 +228,8 @@ def _recommendation_tips(
         fit_tip, stretch_tip, _ = _sf04_loose_copy()
         return fit_tip, stretch_tip
     if _use_basic_only_bars(c, q1) or c == "SF00":
-        fit_tip = (
-            "기본핏으로 주문하시고 헐떡임이 걱정되시면 톡톡으로 앞깔창 요청해 주세요."
-        )
+        # SF00 = 늘림 불필요. 앞깔창·헐떡임 안내는 SF04(헐거움) 전용.
+        fit_tip = "기본핏 · 평소 사이즈로 주문하시면 됩니다. 발볼 늘림은 필요 없어요."
         return fit_tip, "기본핏 + 발볼 늘림 없음"
     if c in STRETCH_CODES:
         st_rec = effective_stretch_step(c, rec_fit)
@@ -305,7 +304,7 @@ def _order_tip(
         fit_tip, _, _ = _sf04_loose_copy()
         return fit_tip.split("\n")[0]
     if code == "SF00":
-        return "기본핏으로 주문하시고 헐떡임이 걱정되시면 톡톡으로 앞깔창 요청해 주세요."
+        return "기본핏 · 평소 사이즈로 주문하시면 됩니다. 발볼 늘림은 필요 없어요."
     if code in STRETCH_CODES:
         st = effective_stretch_step(code, rec_fit)
         if stretch_on_option and st > 0:

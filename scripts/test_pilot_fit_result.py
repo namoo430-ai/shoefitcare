@@ -144,7 +144,33 @@ def main() -> None:
         shoe_size=235,
     )
     assert fr_sf00["precision_tab_eligible"] is True
+    assert fr_sf00["recommended_fit_line"] == "기본핏"
+    assert "기본핏" in fr_sf00["fit_recommendation_tip"]
+    assert "앞깔창" not in fr_sf00["fit_recommendation_tip"]
+    assert "헐떡" not in fr_sf00["fit_recommendation_tip"]
+    assert fr_sf00["stretch_recommendation_tip"] == "기본핏 + 발볼 늘림 없음"
+    assert "앞깔창" not in fr_sf00["order_tip"]
     assert "헐거" in " ".join(fr_loose["narrative_lines"])
+
+    # Q2 발등 + Q3 불편없음 → SF00: 앞깔창 TIP이 나오면 안 됨
+    from pilot_engine import Q1_INSTEP, Q2_INSTEP, Q3_NONE, PilotInput, evaluate
+
+    res_instep_none = evaluate(
+        PilotInput(Q1_INSTEP, [Q2_INSTEP], Q3_NONE, 235, "")
+    )
+    assert res_instep_none.recommendation_code == "SF00"
+    fr_instep_none = build_fit_result(
+        recommendation_code=res_instep_none.recommendation_code,
+        r_code="R4",
+        p_code="P3",
+        s_code="S0",
+        complex_case=False,
+        shoe_size=235,
+        q1=Q1_INSTEP,
+    )
+    assert "앞깔창" not in fr_instep_none["fit_recommendation_tip"]
+    assert "헐떡" not in fr_instep_none["fit_recommendation_tip"]
+    assert "기본핏" in fr_instep_none["fit_recommendation_tip"]
 
     print("test_pilot_fit_result: ok")
 

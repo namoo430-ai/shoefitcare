@@ -18,7 +18,9 @@ Q2_PINKY = "새끼 발가락쪽"
 Q2_BALL = "발볼 부분"
 Q2_INSTEP = "발등 부분"
 Q2_INDEX = "검지발가락"
-Q2_NONE = "불편 사항 없음"
+Q2_NONE = "특정 부위 불편사항 없음"
+# 구버전 UI·저장값 호환
+Q2_NONE_LEGACY = frozenset({"불편 사항 없음", "불편사항 없음"})
 
 Q3_SLIGHT = "가끔 신경 쓰여요"
 Q3_MID = "자주 불편해요"  # 로직상 Q3_SLIGHT와 동일 분기
@@ -79,6 +81,22 @@ class PilotResult:
     instep_adjustment: bool = False
 
 
+def normalize_q2(q2: list[str] | None) -> list[str]:
+    """Q2 목록 정규화. 구버전 '불편 사항 없음' → 특정 부위 불편사항 없음."""
+    out: list[str] = []
+    for x in q2 or []:
+        t = (x or "").strip()
+        if not t:
+            continue
+        if t in Q2_NONE_LEGACY or t == Q2_NONE:
+            out.append(Q2_NONE)
+        else:
+            out.append(t)
+    if Q2_NONE in out:
+        return [Q2_NONE]
+    return out
+
+
 def _has(q2: list[str], key: str) -> bool:
     return key in (q2 or [])
 
@@ -123,7 +141,7 @@ def _ball_only(q2: list[str]) -> bool:
 def evaluate(inp: PilotInput) -> PilotResult:
     inp = PilotInput(
         normalize_q1(inp.q1),
-        inp.q2,
+        normalize_q2(inp.q2),
         normalize_q3(inp.q3),
         inp.q4,
         inp.q5,
